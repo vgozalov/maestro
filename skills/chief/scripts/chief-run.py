@@ -30,6 +30,7 @@ import json
 import os
 import re
 import signal
+import socketserver
 import subprocess
 import sys
 import socket
@@ -991,6 +992,15 @@ def refresh_usage_forever(minutes):
         time.sleep(60)
 
 
+class DashboardServer(http.server.ThreadingHTTPServer):
+    """HTTPServer without the reverse DNS lookup of its own address (socket.getfqdn) on bind, which can stall
+    for many seconds on macOS; the dashboard only ever listens on 127.0.0.1."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def dashboard_page():
     page = DASHBOARD.read_text(encoding="utf-8")
     try:
@@ -1174,7 +1184,7 @@ def serve(repo, port, refresh_minutes=5, days=DEFAULT_DAYS, idle_hours=0):
             pass
 
     try:
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        server = DashboardServer(("127.0.0.1", port), Handler)
     except OSError as error:
         if error.errno != errno.EADDRINUSE:
             raise

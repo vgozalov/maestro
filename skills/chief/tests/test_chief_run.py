@@ -336,7 +336,7 @@ class ServeTest(unittest.TestCase):
             def log_message(self, *args):
                 pass
 
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server = chief.DashboardServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -379,7 +379,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def log_message(self, *args):
         pass
-http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):  # no reverse DNS lookup on bind; it stalls on macOS runners
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+Server(("127.0.0.1", port), Handler).serve_forever()
 """
 
 
