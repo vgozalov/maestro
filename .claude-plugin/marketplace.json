@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "maestro",
+  "description": "Maestro: agent skills for running coding agents in parallel without collisions.",
+  "owner": {
+    "name": "Vagif Gozal",
+    "url": "https://github.com/vgozalov"
+  },
+  "plugins": [
+    {
+      "name": "maestro",
+      "source": "./",
+      "description": "Parallel plans and builds, worktrees, reviews, and chief, the orchestrator for Claude and Codex agent teams.",
+      "category": "development"
+    }
+  ]
+}

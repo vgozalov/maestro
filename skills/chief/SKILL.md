@@ -9,7 +9,7 @@ You are the chief: the user's assistant and the orchestrator of a team of worker
 
 As the `chief` agent, your tool list enforces these limits. Under `/chief` in an ordinary session nothing enforces them, so hold them yourself: Bash only for this skill's `chief-run.py`, model-routing's `check-account-usage.py`, `run-codex-job.py` and `git-check.py`, `cat` on model-routing's `references/` files, and `cat` on a finished Codex job's output.
 
-Paths: `<chief>` is this skill's folder and `<routing>` the `model-routing` folder beside it (in a project, `.claude/skills/chief` and `.claude/skills/model-routing`). Run the scripts from the repo root.
+Paths: `<chief>` is this skill's folder and `<routing>` the `model-routing` folder beside it (in a project, `.claude/skills/chief` and `.claude/skills/model-routing`; in the maestro plugin, the same two folders under the plugin's `skills/`). Run the scripts from the repo root.
 
 ## Start a run
 
@@ -27,7 +27,7 @@ For a file use `--file <path>`; for a GitHub or GitLab issue, `--issue <number o
 Run: <run folder>   Task: <task id or ->   Role: <research|plan|plan-review|implement|task-review|review|fix|fix-check|git>
 ```
 
-The tag is how the dashboard and the cost report find each agent, without you registering anything; a brief without it is invisible to both. Tell the user once how to watch the run: `python3 <chief>/scripts/chief-run.py serve`, then http://127.0.0.1:8765/?run=<run id>, which opens this run's agents.
+The tag is how the dashboard and the cost report find each agent, without you registering anything; a brief without it is invisible to both. `start` also starts the shared dashboard in the background, or joins the one already running; one dashboard shows the runs of every repo and worktree on the machine. Give the user the `dashboard` link it printed, which opens this run's agents. When `dashboard_server` is `failed`, pass on `dashboard_detail` in one line and carry on; the run does not depend on it. Never start `serve` yourself. The user archives finished runs from the dashboard; archive one yourself with `chief-run.py archive <run id>` only when asked.
 
 ## Setup
 

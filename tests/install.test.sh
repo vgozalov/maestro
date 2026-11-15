@@ -119,6 +119,8 @@ test_hosted_dot_git_installs_last() { assert_hosted_last "vgozalov/skills.git"; 
 test_hosted_trailing_slash_installs_last() { assert_hosted_last "https://github.com/vgozalov/skills/"; }
 test_hosted_ssh_installs_last() { assert_hosted_last "git@github.com:vgozalov/skills.git"; }
 test_hosted_github_prefix_installs_last() { assert_hosted_last "github:vgozalov/skills"; }
+test_hosted_new_name_installs_last() { assert_hosted_last "vgozalov/maestro"; }
+test_hosted_new_name_url_installs_last() { assert_hosted_last "https://github.com/vgozalov/maestro.git#v1.1.0"; }
 test_hosted_pinned_url_installs_last() {
   setup_repo; setup_stub
   printf 'https://github.com/vgozalov/skills.git#v1 *\nexample/source#v1.2.3 *\n' > .agents/skills.txt

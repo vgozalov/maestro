@@ -2,329 +2,650 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent runs</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chief Concert Hall</title>
 <style>
+/* Fonts ship with the skill (SIL OFL 1.1, see fonts/), so the page fetches nothing from outside this machine. */
+@font-face { font-family: "Instrument Serif"; src: url("/fonts/instrument-serif.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Instrument Sans"; src: url("/fonts/instrument-sans.woff2") format("woff2"); font-weight: 400 700; font-stretch: 75% 100%; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/fonts/ibm-plex-mono.woff2") format("woff2"); font-display: swap; }
+/* A concert hall at night. The stage shows who is playing now (one ensemble per live run, led by its chief), the
+   programme lists every run as a compact slip, and a run opens as its score. Palette and robots are the README art's. */
 :root {
-  --paper: #EEF1F4; --surface: #FFFFFF; --ink: #1C2430; --muted: #5F6B7A; --line: #D5DBE3;
-  --claude: #3D4FB8; --claude-soft: #E3E6F8; --chatgpt: #0F7C6E; --chatgpt-soft: #DDF1EE;
-  --warn: #B7791F; --warn-soft: #FBF0DC; --bad: #B4232A; --ok: #2F7D32;
-  color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --paper: #151A21; --surface: #1E252F; --ink: #E4E8EE; --muted: #9AA5B4; --line: #2E3744;
-    --claude: #8C9BFF; --claude-soft: #262D52; --chatgpt: #4CC2AF; --chatgpt-soft: #173B37;
-    --warn: #E3A94A; --warn-soft: #3A2E17; --bad: #F2777D; --ok: #7BC47F;
-    color-scheme: dark;
-  }
+  color-scheme: dark;
+  --night: #140D08; --night-2: #1D130B;
+  --gold: #E4B04A; --gold-lt: #F3D58F;
+  --cream: #EFE4CF; --muted: #B3A285;
+  --lamp: #FFC45E;
+  --claude: #D4703C; --gpt: #74B9A7; --bad: #E0533D;
+  --line: rgba(228,176,74,.22);
+  --f-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --f-body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--night); color: var(--cream); }
 body {
-  margin: 0; background: var(--paper); color: var(--ink);
-  font: 15px/1.45 "Avenir Next", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  font-variant-numeric: tabular-nums;
+  font: 14px/1.5 var(--f-body);
+  padding: max(14px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 32px max(16px, env(safe-area-inset-left, 0px));
+  background: radial-gradient(1000px 520px at 62% 0%, rgba(255,170,60,.10), transparent 62%), var(--night);
+  min-height: 100vh;
 }
-button { font: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--claude); outline-offset: 2px; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+:focus-visible { outline: 1.5px solid var(--gold-lt); outline-offset: 2px; }
+.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.label { font: 500 11px/1.2 var(--f-mono); letter-spacing: .08em; color: var(--muted); }
+.slip { background: linear-gradient(180deg, #21160D, var(--night-2)); border: 1.5px solid var(--line); border-radius: 13px; }
 
-header { display: flex; flex-wrap: wrap; gap: 20px 32px; align-items: flex-end; padding: 20px 24px 16px; }
-.title h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
-.title p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
-.title { min-width: 0; }
-#repo { overflow-wrap: anywhere; }
-.meters { display: flex; gap: 20px 32px; margin-left: auto; flex-wrap: wrap; align-items: flex-end; }
-.gauges { display: flex; gap: 20px; flex-wrap: wrap; }
-.gauge { min-width: 210px; }
-.gauge-head { display: flex; justify-content: space-between; font-size: 13px; }
-.gauge-head strong { font-weight: 600; }
-.gauge-head .claude { color: var(--claude); } .gauge-head .chatgpt { color: var(--chatgpt); }
-.bar { position: relative; height: 10px; border-radius: 5px; background: var(--line); margin: 5px 0 3px; overflow: hidden; }
-.bar.week { height: 5px; }
-.bar span { position: absolute; inset: 0 auto 0 0; border-radius: 5px; }
-.bar.claude span { background: var(--claude); } .bar.chatgpt span { background: var(--chatgpt); }
-.bar.hot span { background: var(--warn); }
-.bar .switch { position: absolute; top: -2px; bottom: -2px; left: 60%; width: 2px; background: var(--ink); opacity: .55; }
-.gauge small { color: var(--muted); font-size: 12px; }
-.spend { text-align: right; }
-.spend .total { font-size: 26px; font-weight: 600; line-height: 1.1; }
-.spend small { display: block; color: var(--muted); font-size: 12px; }
-.spend .split span { font-size: 13px; margin-left: 10px; }
-.split .claude { color: var(--claude); } .split .chatgpt { color: var(--chatgpt); }
+/* the stage */
+.stage { position: relative; border-radius: 16px; border: 1.5px solid rgba(228,176,74,.35); overflow: hidden;
+  background: radial-gradient(700px 300px at 70% 40%, rgba(255,170,60,.12), transparent 70%), linear-gradient(180deg, #1A0F09, #0E0805); }
+.stage-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; padding: 18px 22px 6px; }
+.tags { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tag { font: 500 12px/1 var(--f-mono); padding: 6px 11px; border: 1.5px solid var(--claude); border-radius: 8px; color: var(--claude); }
+.tag.gpt { border-color: var(--gpt); color: var(--gpt); }
+.tags .sep { width: 1.5px; height: 22px; background: var(--line); margin: 0 4px; }
+.headline { margin: 12px 0 4px; font: 400 clamp(30px, 4.4vw, 52px)/1.02 var(--f-display); letter-spacing: -.01em; text-wrap: balance; }
+.headline em { color: var(--lamp); font-style: italic; }
+.sub { color: var(--muted); font-size: 15px; max-width: 64ch; margin: 0; }
+.right { display: grid; gap: 10px; justify-items: end; }
+.meters { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+.meter { display: grid; justify-items: center; gap: 2px; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
+.meter svg { width: 132px; height: 76px; display: block; }
+.meter .who { font: 500 12px var(--f-mono); }
+.meter .wk { font: 11px var(--f-mono); color: var(--muted); }
+.ledger { display: grid; grid-template-columns: repeat(3, auto); gap: 0; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
+.ledger > div { padding: 8px 14px; display: grid; gap: 4px; border-left: 1.5px solid var(--line); min-width: 120px; }
+.ledger > div:first-child { border-left: 0; }
+.ledger .v { font: 400 26px/1 var(--f-display); font-variant-numeric: tabular-nums; }
+.ledger .v small { font: 500 12px var(--f-mono); color: var(--muted); margin-left: 3px; }
+.ledger svg { width: 100%; height: 18px; display: block; }
+.scene-wrap { overflow-x: auto; }
+.scene { display: block; width: 100%; min-width: 760px; height: auto; }
+.scene .player { cursor: pointer; }
+.scene .player:hover .plate rect, .scene .player:focus .plate rect { stroke: rgba(228,176,74,.6); }
+.scene .glow { animation: breathe 4.6s ease-in-out infinite; }
+.scene .play, .portrait .play { transform-box: fill-box; transform-origin: 50% 100%; animation: play 2.4s ease-in-out infinite; }
+.scene .lead { transform-box: fill-box; transform-origin: 50% 100%; animation: lead 2.8s ease-in-out infinite; }
+.scene .note { opacity: 0; transform-box: fill-box; transform-origin: 50% 50%; animation: rise 3.4s ease-out infinite; }
+.swing { transform-origin: -50px -138px; animation: swing 2.8s ease-in-out infinite; }
+.patina { filter: hue-rotate(118deg) saturate(.55) brightness(1.02); }
+@keyframes play { 0%, 100% { transform: rotate(-2.2deg) translateY(0); } 25% { transform: rotate(0deg) translateY(-1.5px); } 50% { transform: rotate(2.2deg) translateY(0); } 75% { transform: rotate(0deg) translateY(-1.5px); } }
+@keyframes lead { 0%, 100% { transform: rotate(-1.4deg); } 50% { transform: rotate(1.6deg) translateY(-1px); } }
+@keyframes rise { 0% { opacity: 0; transform: translate(0, 0) scale(.6) rotate(-8deg); } 15% { opacity: .95; } 70% { opacity: .55; } 100% { opacity: 0; transform: translate(var(--dx), -58px) scale(1.05) rotate(12deg); } }
+@keyframes swing { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(4deg); } }
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
+@keyframes flicker { 50% { opacity: .5; } }
 
-.warnings { margin: 0 24px 12px; padding: 10px 14px; border-radius: 8px; background: var(--warn-soft); border-left: 4px solid var(--warn); font-size: 13px; }
-.warnings ul { margin: 4px 0 0; padding-left: 18px; }
-.warnings[hidden] { display: none; }
+/* toolbar, notices */
+.bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 16px 0 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font: 500 12.5px/1 var(--f-mono); padding: 8px 12px; border: 1.5px solid var(--line); border-radius: 10px; color: var(--muted); background: var(--night-2); }
+.chip:hover { border-color: var(--gold); color: var(--cream); }
+.chip[aria-pressed="true"] { border-color: var(--gold); color: var(--gold-lt); background: rgba(228,176,74,.1); }
+.chip.danger { border-color: rgba(224,83,61,.5); color: #F2A091; }
+.bar .spacer { flex: 1; }
+.notice { display: flex; gap: 10px; align-items: baseline; padding: 9px 14px; margin-bottom: 8px; border: 1.5px solid rgba(224,83,61,.45); border-radius: 12px; background: rgba(224,83,61,.07); font-size: 13px; }
+.notice b { font: 500 11px var(--f-mono); color: var(--bad); letter-spacing: .08em; white-space: nowrap; }
+.notice ul { margin: 0; padding-left: 16px; }
+.status-line { color: var(--muted); font: 12px var(--f-mono); margin: 0 0 10px; }
 
-main { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(250px, 1fr); gap: 12px; padding: 0 24px 24px; overflow-x: auto; }
-.col { min-height: 60vh; }
-.col h2 { display: flex; justify-content: space-between; margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--muted); }
-.col h2 .count { font-weight: 500; }
-.col.quiet { opacity: .75; }
-.empty { color: var(--muted); font-size: 13px; padding: 10px 2px; }
+/* programme */
+.prog { display: flex; gap: 10px; align-items: flex-start; }
+.col { flex: 1 1 0; min-width: 0; display: grid; gap: 10px; align-content: start; }
+.col-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 4px 4px 8px; border-bottom: 1.5px solid var(--line); }
+.col-head h2 { margin: 0; font: 400 21px/1 var(--f-display); }
+.col-head .n { font: 12px var(--f-mono); color: var(--muted); }
+.col-head .tools { display: flex; gap: 6px; align-items: baseline; }
+.col-head .link { font: 500 11.5px var(--f-mono); color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
+.col-head .link:hover { color: var(--gold-lt); }
+.col.playing .col-head { border-bottom-color: rgba(255,196,94,.6); }
+.col.rail { flex: 0 0 34px; }
+.col.rail .col-head { writing-mode: vertical-rl; transform: rotate(180deg); height: 150px; padding: 8px 6px; border: 0; border-left: 1.5px solid var(--line); justify-content: flex-end; gap: 8px; }
+.col.rail .col-head h2 { font-size: 17px; color: var(--muted); }
+.confirm { display: grid; gap: 8px; padding: 10px 12px; font-size: 13px; }
+.confirm .row { display: flex; gap: 8px; }
+.empty { color: var(--muted); font: italic 400 20px/1.3 var(--f-display); padding: 30px 8px; text-align: center; }
 
-.card { display: block; width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 10px; cursor: pointer; }
-.card:hover { border-color: var(--muted); }
-.card h3 { margin: 0 0 2px; font-size: 15px; font-weight: 600; line-height: 1.3; }
-.card .source { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
-.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 2px 8px 2px 6px; border-radius: 999px; border: 1px solid transparent; }
-.chip.claude { background: var(--claude-soft); color: var(--claude); }
-.chip.chatgpt { background: var(--chatgpt-soft); color: var(--chatgpt); }
-.chip.stopped, .chip.failed, .chip.rate_limited { background: transparent; border-color: var(--bad); color: var(--bad); }
-.chip.superseded { opacity: .5; }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
-.chip.done .dot { opacity: .45; }
-.chip.running .dot { animation: pulse 1.4s ease-in-out infinite; }
-@keyframes pulse { 50% { transform: scale(1.6); opacity: .4; } }
-@media (prefers-reduced-motion: reduce) { .chip.running .dot { animation: none; } }
-.card .cost { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
-.cost .claude { color: var(--claude); } .cost .chatgpt { color: var(--chatgpt); }
-.cost .sum { margin-left: auto; color: var(--ink); font-weight: 600; }
+.card { text-align: left; width: 100%; padding: 12px 14px; display: grid; gap: 8px; transition: border-color .15s, transform .15s; }
+.card:hover { border-color: rgba(228,176,74,.6); transform: translateY(-1px); }
+.card.done { opacity: .8; }
+.card.quiet { opacity: .62; border-style: dashed; }
+.card .where { display: flex; justify-content: space-between; gap: 8px; font: 11.5px/1.2 var(--f-mono); color: var(--muted); min-width: 0; }
+.card .where span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card h3 { margin: 0; font: 400 21px/1.08 var(--f-display); text-wrap: balance; overflow-wrap: anywhere; }
+.staff { display: block; width: 100%; height: 30px; }
+.stats { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; font: 12px var(--f-mono); color: var(--muted); }
+.stats .count { font: 400 24px/1 var(--f-display); color: var(--cream); }
+.stats .count small { font: 500 11px var(--f-mono); color: var(--muted); margin-left: 4px; letter-spacing: .04em; }
+.flag { display: inline-flex; gap: 6px; align-items: center; }
+.flag.live { color: var(--lamp); }
+.flag.bad { color: var(--bad); }
+.bulb { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; flex: none; }
+.flag.live .bulb { animation: flicker 2.4s ease-in-out infinite; }
+.mix { font: 11.5px/1.45 var(--f-mono); color: var(--muted); }
+.mix b { color: var(--cream); font-weight: 500; }
+.cost { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+.split { display: flex; height: 3px; background: rgba(228,176,74,.15); border-radius: 2px; overflow: hidden; }
+.split .c { background: var(--claude); }
+.split .g { background: var(--gpt); }
+.cost .sum { font: 400 19px/1 var(--f-display); font-variant-numeric: tabular-nums; }
 
-.drawer { position: fixed; inset: 0 0 0 auto; width: min(760px, 100%); background: var(--surface); border-left: 1px solid var(--line); box-shadow: -12px 0 32px rgba(10, 20, 40, .18); transform: translateX(100%); transition: transform .2s ease; display: flex; flex-direction: column; z-index: 10; }
-.drawer.open { transform: none; }
-@media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
-.drawer-head { display: flex; gap: 12px; align-items: flex-start; padding: 18px 20px 12px; border-bottom: 1px solid var(--line); }
-.drawer-head h2 { margin: 0; font-size: 20px; font-weight: 600; }
-.drawer-head p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
-.close { margin-left: auto; background: none; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-.drawer-body { overflow: auto; padding: 14px 20px 24px; }
-.drawer-body h3 { font-size: 14px; margin: 18px 0 6px; }
-.timeline { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
-.timeline span { padding: 2px 8px; border-radius: 6px; background: var(--paper); }
-.timeline span.now { background: var(--ink); color: var(--surface); }
+/* the score */
+.curtain { position: fixed; inset: 0; background: rgba(8,5,3,.78); backdrop-filter: blur(3px); z-index: 20; }
+.score { position: fixed; z-index: 21; inset: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  display: grid; grid-template-rows: auto auto 1fr; overflow: hidden; border-radius: 16px; border: 1.5px solid rgba(228,176,74,.4); background: linear-gradient(180deg, #1D130B, #140D08); }
+.s-head { display: flex; justify-content: space-between; gap: 16px; padding: 16px 20px 10px; border-bottom: 1.5px solid var(--line); flex-wrap: wrap; }
+.s-head h2 { margin: 2px 0 6px; font: 400 34px/1.05 var(--f-display); text-wrap: balance; }
+.s-head .meta { font: 12px var(--f-mono); color: var(--muted); display: flex; gap: 6px 14px; flex-wrap: wrap; }
+.s-head .meta b { color: var(--cream); font-weight: 500; }
+.tot { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
+.tot .v { font: 400 28px/1 var(--f-display); font-variant-numeric: tabular-nums; margin-top: 4px; }
+.tot .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.close { font: 500 12px/1 var(--f-mono); border: 1.5px solid var(--line); padding: 9px 12px; border-radius: 10px; }
+.close:hover { border-color: var(--gold); }
+.measures { padding: 10px 20px 12px; border-bottom: 1.5px solid var(--line); overflow-x: auto; }
+.measures svg { display: block; width: 100%; min-width: 640px; height: 64px; }
+.s-body { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr); min-height: 0; }
+.s-main { overflow: auto; padding: 16px 20px 22px; display: grid; gap: 20px; align-content: start; }
+.s-side { overflow: auto; border-left: 1.5px solid var(--line); padding: 16px 20px 22px; display: grid; gap: 14px; align-content: start; background: rgba(10,6,4,.35); }
+.sec-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.sec-head h3 { margin: 0; font: 400 22px/1 var(--f-display); }
+.areas { display: flex; gap: 6px; flex-wrap: wrap; }
+.area { font: 500 11.5px var(--f-mono); padding: 3px 9px; border: 1.5px solid var(--line); border-radius: 8px; }
+.area em { font-style: normal; color: var(--muted); margin-left: 4px; }
+.wave { margin-bottom: 10px; }
+.wave-name { font: italic 400 16px/1 var(--f-display); color: var(--gold-lt); margin-bottom: 6px; }
+.wave-tasks { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.task { display: grid; grid-template-columns: 22px 1fr; gap: 2px 10px; align-items: start; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 10px; background: rgba(20,13,8,.5); }
+.task svg { grid-row: span 3; width: 22px; height: 30px; }
+.task .tt { font: 500 11.5px var(--f-mono); color: var(--muted); display: flex; justify-content: space-between; gap: 6px; }
+.task .nm { font-size: 13px; line-height: 1.3; overflow-wrap: anywhere; }
+.task .st { font: 11.5px var(--f-mono); color: var(--muted); }
+.task.queued { opacity: .65; }
+.section { margin-bottom: 12px; }
+.section-head { display: flex; align-items: center; gap: 10px; padding-bottom: 5px; border-bottom: 1.5px solid var(--line); }
+.section-head svg { width: 26px; height: 32px; flex: none; }
+.section-head h4 { margin: 0; font: 400 19px/1 var(--f-display); text-transform: capitalize; }
+.section-head .mix { margin-left: auto; }
+.table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { color: var(--muted); font-weight: 500; }
-td.num, th.num { text-align: right; }
+td { padding: 6px; border-bottom: 1px solid rgba(228,176,74,.1); vertical-align: baseline; }
+td.num { text-align: right; font-family: var(--f-mono); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 tr.agent { cursor: pointer; }
-tr.agent:hover td, tr.agent.selected td { background: var(--paper); }
-td .prov { font-weight: 600; }
-td .prov.claude { color: var(--claude); } td .prov.chatgpt { color: var(--chatgpt); }
-tfoot td { font-weight: 600; border-bottom: none; }
-.files { display: flex; gap: 6px; flex-wrap: wrap; }
-.files button { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 13px; }
-.files button[aria-pressed="true"] { border-color: var(--ink); }
-pre.doc { white-space: pre-wrap; word-break: break-word; background: var(--paper); border-radius: 8px; padding: 12px; font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace; max-height: 50vh; overflow: auto; }
-.note { color: var(--muted); font-size: 12px; }
-.status-line { padding: 0 24px 8px; color: var(--muted); font-size: 12px; }
+tr.agent:hover td, tr.agent.sel td { background: rgba(255,196,94,.07); }
+tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
+.prov { font: 500 11.5px var(--f-mono); }
+.prov.claude { color: var(--claude); }
+.prov.chatgpt { color: var(--gpt); }
+.state { font: 500 11.5px var(--f-mono); display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; color: var(--muted); }
+.state.running { color: var(--lamp); }
+.state.done { color: var(--gold-lt); }
+.state.blocked, .state.failed, .state.rate_limited { color: var(--bad); }
+.state.running .bulb { animation: flicker 2.4s ease-in-out infinite; }
+.portrait { display: grid; grid-template-columns: 92px 1fr; gap: 14px; align-items: center; }
+.portrait svg { width: 92px; height: 116px; }
+.portrait h3 { margin: 0 0 4px; font: 400 24px/1.05 var(--f-display); text-transform: capitalize; }
+.reply { font: 12px/1.6 var(--f-mono); white-space: pre-wrap; overflow-wrap: anywhere; background: #0E0805; border: 1.5px solid var(--line); border-radius: 10px; padding: 10px 12px; max-height: 320px; overflow: auto; margin: 0; }
+.acts { display: grid; gap: 3px; font: 12px/1.5 var(--f-mono); }
+.acts div { display: grid; grid-template-columns: 48px 1fr; gap: 8px; color: var(--muted); }
+.acts div span:last-child { color: var(--cream); overflow-wrap: anywhere; }
+.files { display: flex; gap: 8px; flex-wrap: wrap; }
 
-@media (max-width: 720px) {
-  header { padding: 16px; }
-  .meters { margin-left: 0; }
-  .gauge { min-width: 0; flex: 1 1 100%; }
-  .spend { text-align: left; }
-  .spend .split span { margin: 0 10px 0 0; }
-  main { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); padding: 0 16px 16px; }
-  .col { min-height: 0; }
-  .warnings { margin: 0 16px 12px; }
-  .status-line { padding: 0 16px 8px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+@media (max-width: 1100px) {
+  .prog { flex-wrap: wrap; }
+  .col { flex: 1 1 260px; }
+  .col.rail { flex: 1 1 100%; }
+  .col.rail .col-head { writing-mode: horizontal-tb; transform: none; height: auto; border-left: 0; border-bottom: 1.5px dashed var(--line); padding: 4px; }
+  .s-body { grid-template-columns: 1fr; overflow: auto; }
+  .s-main, .s-side { overflow: visible; }
+  .s-side { border-left: 0; border-top: 1.5px solid var(--line); }
+  .right { justify-items: start; }
+}
+@media (max-width: 620px) {
+  .meter svg { width: 112px; height: 66px; }
+  .ledger { grid-template-columns: 1fr 1fr; }
+  .ledger > div:nth-child(3) { border-left: 0; border-top: 1.5px solid var(--line); grid-column: 1 / -1; }
+  .s-head h2 { font-size: 28px; }
 }
 </style>
 </head>
 <body>
-<header>
-  <div class="title">
-    <h1>Agent runs</h1>
-    <p id="repo">Loading…</p>
-  </div>
-  <div class="meters">
-    <div class="gauges" id="gauges"></div>
-    <div class="spend" id="spend"></div>
-  </div>
-</header>
-<div class="warnings" id="warnings" hidden></div>
-<div class="status-line" id="status"></div>
-<main id="board" aria-live="polite"></main>
+<!--ROBOTS-->
 
-<aside class="drawer" id="drawer" aria-hidden="true" aria-labelledby="d-title">
-  <div class="drawer-head">
-    <div><h2 id="d-title"></h2><p id="d-sub"></p></div>
-    <button class="close" id="d-close" type="button">Close</button>
+<section class="stage" aria-label="On stage now">
+  <div class="stage-top">
+    <div>
+      <div class="tags"><span class="tag">claude</span><span class="tag gpt">codex</span><span class="sep"></span><span class="label" id="where">Loading…</span></div>
+      <h1 class="headline" id="headline">Tuning up.</h1>
+      <p class="sub" id="sub"></p>
+    </div>
+    <div class="right">
+      <div class="ledger" id="ledger"></div>
+      <div class="meters" id="meters"></div>
+    </div>
   </div>
-  <div class="drawer-body" id="d-body"></div>
-</aside>
+  <div class="scene-wrap"><svg class="scene" id="scene" viewBox="0 0 1200 120" role="img" aria-label="Live agents, grouped by run"></svg></div>
+</section>
+
+<div class="bar">
+  <div class="chips" id="filters" role="group" aria-label="Filter by checkout"></div>
+  <span class="spacer"></span>
+  <button class="chip" id="archived-toggle" type="button" aria-pressed="false">archived</button>
+</div>
+<div id="notices"></div>
+<p class="status-line" id="status"></p>
+<main class="prog" id="prog" aria-live="polite"></main>
+
+<div class="curtain" id="curtain" hidden></div>
+<section class="score" id="score" hidden role="dialog" aria-modal="true" aria-labelledby="s-title"></section>
 
 <script>
 const POLL_MS = 3000
-const COLUMNS = [
-  { label: 'Intake', phases: ['intake'] },
-  { label: 'Research', phases: ['research'] },
-  { label: 'Plan', phases: ['plan', 'plan-review', 'approval'] },
-  { label: 'Implement', phases: ['implement'] },
-  { label: 'Review', phases: ['review'] },
-  { label: 'Report', phases: ['report'] },
-  { label: 'Paused', phases: ['paused'], quiet: true },
-  { label: 'Done', phases: ['done'], quiet: true },
+const PHASES = ['intake', 'research', 'plan', 'implement', 'review', 'report', 'done']
+const COLS = [['intake', 'Intake'], ['research', 'Research'], ['plan', 'Plan'], ['implement', 'Implement'], ['review', 'Review'], ['report', 'Report'], ['paused', 'Paused'], ['done', 'Done']]
+const INSTRUMENT = { research: 'violin', plan: 'clarinet', implement: 'cello', review: 'trumpet', fix: 'clarinet', git: 'bass', other: 'violin' }
+const ORDER = ['chief', 'research', 'plan', 'implement', 'review', 'fix', 'git', 'other']
+const NOTE = { done: ['#E4B04A', 'solid'], build: ['#FFC45E', 'glow'], review: ['#74B9A7', 'solid'], fix: ['#D4703C', 'solid'], blocked: ['#E0533D', 'solid'], queued: ['#B3A285', 'hollow'] }
+const NOTE_SHAPES = [
+  'M 0 0 m -3.6 0 a 3.6 2.6 -20 1 0 7.2 0 a 3.6 2.6 -20 1 0 -7.2 0 M 3.2 -0.6 V -15 Q 8 -12 9 -7 Q 7 -10 3.2 -11',
+  'M 0 0 m -3.4 0 a 3.4 2.5 -20 1 0 6.8 0 a 3.4 2.5 -20 1 0 -6.8 0 M 3 -0.5 V -14 L 15 -17 V -3.5 M 15 -3.5 m -3.4 0 a 3.4 2.5 -20 1 0 6.8 0 a 3.4 2.5 -20 1 0 -6.8 0 M 3 -11 L 15 -14',
+  'M 0 0 m -3.6 0 a 3.6 2.6 -20 1 0 7.2 0 a 3.6 2.6 -20 1 0 -7.2 0 M 3.2 -0.6 V -15',
 ]
-const PROVIDER = { claude: 'Claude', chatgpt: 'ChatGPT' }
+const params = new URLSearchParams(location.search)
+let active = null, archived = null, view = 'active', filter = params.get('repo') || null
+let openKey = null, openAgent = null, openFile = null, confirmDone = false, linkedOnce = false
+let lastActive = '', lastArchived = ''
+
 const $ = (id) => document.getElementById(id)
-const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
-let board = null
-let openRun = null
-let openAgent = null
-let openFile = null
-let lastBoard = ''
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+const money = (v) => v == null ? 'unpriced' : v > 0 && v < 0.005 ? '<$0.01' : '$' + Number(v).toFixed(2)
+const short = (m) => String(m || '?').replace(/^claude-/, '').replace(/-\d+(-\d+)*$/, '').replace(/^gpt-[\d.]+-/, '')
+const ms = (iso) => iso ? Date.parse(iso) : NaN
+function dur(from, to) {
+  const s = Math.max(0, ((to ? ms(to) : Date.now()) - ms(from)) / 1000)
+  if (!isFinite(s)) return ''
+  if (s < 90) return Math.round(s) + 's'
+  if (s < 5400) return Math.round(s / 60) + ' min'
+  if (s < 172800) return (s / 3600).toFixed(1) + ' h'
+  return Math.round(s / 86400) + ' d'
+}
+const ago = (iso) => iso ? dur(iso) : ''
+const fit = (text, px, charW) => { const n = Math.max(4, Math.floor(px / charW)); text = String(text || ''); return text.length > n ? text.slice(0, n - 1) + '…' : text }
+const players = (r) => r.agents.filter((a) => a.kind !== 'chief')
+const live = (r) => players(r).filter((a) => a.status === 'running')
+const stuck = (r) => r.agents.filter((a) => ['blocked', 'failed'].includes(a.status))
+const cost = (r, p) => r.agents.filter((a) => !a.superseded && (!p || a.provider === p)).reduce((s, a) => s + (a.cost_usd || 0), 0)
+const phaseIndex = (p) => ({ 'plan-review': 2, approval: 2 })[p] ?? PHASES.indexOf(p)
+const column = (p) => (p === 'plan-review' || p === 'approval' ? 'plan' : p)
+const board = () => (view === 'archived' ? archived : active)
+const visible = () => (board() ? board().runs.filter((r) => !filter || r.repo === filter) : [])
+const allRuns = () => [...(active ? active.runs : []), ...(archived ? archived.runs : [])]
+const repoName = (path) => String(path || '').split('/').pop()
+const instrument = (a) => INSTRUMENT[a.kind] || 'violin'
 
-function money(value) { return value == null ? 'unpriced' : value > 0 && value < 0.005 ? '<$0.01' : '$' + value.toFixed(2) }
-function compact(n) {
-  if (!n) return '0'
-  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'k'
-  return String(n)
+/* ---------- small drawings ---------- */
+function noteHead(x, y, status, r = 4.2) {
+  const [color, kind] = NOTE[status] || NOTE.queued
+  const shape = `cx="${x}" cy="${y}" rx="${r * 1.2}" ry="${r * .85}" transform="rotate(-20 ${x} ${y})"`
+  const head = kind === 'hollow' ? `<ellipse ${shape} fill="none" stroke="${color}" stroke-width="1.3"/>`
+    : `<ellipse ${shape} fill="${color}"${kind === 'glow' ? ' style="filter:drop-shadow(0 0 4px #FFC45E)"' : ''}/>`
+  return head + `<path d="M ${x + r * 1.1} ${y} V ${y - r * 5}" stroke="${color}" stroke-width="1.2"/>`
 }
-function shortModel(model) {
-  return String(model || '?').replace(/^claude-/, '').replace(/-\d+(-\d+)*$/, '').replace(/^gpt-[\d.]+-/, '')
-}
-function since(iso, until) {
-  if (!iso) return ''
-  const seconds = Math.max(0, ((until ? Date.parse(until) : Date.now()) - Date.parse(iso)) / 1000)
-  if (seconds < 90) return Math.round(seconds) + 's'
-  if (seconds < 5400) return Math.round(seconds / 60) + ' min'
-  return (seconds / 3600).toFixed(1) + ' h'
-}
-function tokensOf(agent) {
-  const t = agent.tokens || {}
-  return agent.provider === 'chatgpt' ? (t.input || 0) + (t.output || 0) : Object.values(t).reduce((a, b) => a + b, 0)
-}
-
-function gauge(name, reading) {
-  const label = PROVIDER[name]
-  if (!reading || reading['5h'] == null) {
-    return `<div class="gauge"><div class="gauge-head"><strong class="${name}">${label}</strong><span>no reading</span></div>
-      <div class="bar ${name}"><i class="switch" title="60% switch point"></i></div><small>Run the usage check to fill this in</small></div>`
+function cardStaff(r) {
+  // Five staff lines, bar lines between the seven phases, the current phase lit; plan tasks sit on it as notes.
+  const W = 240, i = Math.max(0, phaseIndex(r.phase)), done = r.phase === 'done'
+  let s = ''
+  for (let k = 0; k < 5; k++) s += `<path d="M 0 ${6 + k * 4.5} H ${W}" stroke="rgba(228,176,74,.28)" stroke-width=".8"/>`
+  for (let k = 0; k <= 7; k++) s += `<path d="M ${k * W / 7} 6 V 24" stroke="rgba(228,176,74,${k === 0 || k === 7 ? .6 : .3})" stroke-width="${k === 0 || k === 7 ? 1.4 : .8}"/>`
+  if (!done && r.phase !== 'paused') s += `<rect x="${i * W / 7 + 1}" y="6" width="${W / 7 - 2}" height="18" fill="rgba(255,196,94,.16)"/>`
+  for (let k = 0; k < 7; k++) if (done || k < i) s += `<rect x="${k * W / 7 + 1}" y="27" width="${W / 7 - 2}" height="2" fill="rgba(228,176,74,.55)"/>`
+  if (!done && r.phase !== 'paused') s += `<rect x="${i * W / 7 + 1}" y="27" width="${W / 7 - 2}" height="2" fill="#FFC45E" style="filter:drop-shadow(0 0 3px #FFC45E)"/>`
+  const tasks = r.tasks || []
+  if (tasks.length) {
+    const box = i * W / 7, shown = tasks.slice(0, 12), step = Math.min(10, (W / 7 - 6) / shown.length)
+    shown.forEach((t, k) => { s += noteHead(box + 5 + k * step, 19 - (k % 3) * 2.2, t.status, 2.6) })
   }
-  const five = reading['5h'], week = reading.week ?? 0
-  const hot = five >= 90 || week >= 90 ? 'hot' : ''
-  return `<div class="gauge"><div class="gauge-head"><strong class="${name}">${label}</strong><span>${five}% of 5 h${reading.blocked ? ', blocked' : ''}</span></div>
-    <div class="bar ${name} ${hot}"><span style="width:${Math.min(five, 100)}%"></span><i class="switch" title="60% switch point"></i></div>
-    <div class="bar week ${name}"><span style="width:${Math.min(week, 100)}%"></span></div>
-    <small>${week}% of the week; the line marks the 60% switch</small></div>`
+  return `<svg class="staff" viewBox="0 0 ${W} 30" preserveAspectRatio="none" aria-label="phase ${esc(r.phase)}${tasks.length ? ', ' + tasks.length + ' plan tasks' : ''}">${s}</svg>`
+}
+function meter(name, reading, color) {
+  const five = reading && reading['5h'] != null ? Math.round(reading['5h']) : null
+  const week = reading && reading.week != null ? Math.round(reading.week) : null
+  const cx = 66, cy = 66, R = 54, ang = (p) => Math.PI * (1 - Math.min(Math.max(p, 0), 100) / 100)
+  const pt = (p, r) => [cx + r * Math.cos(ang(p)), cy - r * Math.sin(ang(p))]
+  let ticks = ''
+  for (let p = 0; p <= 100; p += 10) { const [x1, y1] = pt(p, R), [x2, y2] = pt(p, R - (p % 50 ? 5 : 9)); ticks += `<path d="M ${x1} ${y1} L ${x2} ${y2}" stroke="${p >= 90 ? '#E0533D' : '#B3A285'}" stroke-width="${p % 50 ? 1 : 1.6}"/>` }
+  const [a1, b1] = pt(60, R + 2), [a2, b2] = pt(60, R - 12)
+  let needles = ''
+  if (week != null) { const [w1, v1] = pt(week, R - 22); needles += `<path d="M ${cx} ${cy} L ${w1} ${v1}" stroke="${color}" stroke-opacity=".5" stroke-width="2.4" stroke-linecap="round"/>` }
+  if (five != null) { const [n1, m1] = pt(five, R - 6); needles += `<path d="M ${cx} ${cy} L ${n1} ${m1}" stroke="${color}" stroke-width="2" stroke-linecap="round" style="filter:drop-shadow(0 0 3px ${color})"/>` }
+  const label = five == null ? 'no reading' : `${name}: ${five}% of the 5-hour window, ${week}% of the week${reading.blocked ? ', blocked' : ''}`
+  return `<div class="meter"><svg viewBox="0 0 132 76" role="img" aria-label="${esc(label)}">
+    <path d="M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}" fill="rgba(255,196,94,.05)" stroke="#6B4A1C" stroke-width="1.5"/>
+    ${ticks}<path d="M ${a1} ${b1} L ${a2} ${b2}" stroke="#FFC45E" stroke-width="2"/>${needles}
+    <circle cx="${cx}" cy="${cy}" r="5" fill="#B88A34" stroke="#150C05" stroke-width="1.2"/>
+    <text x="${cx}" y="${cy - 18}" text-anchor="middle" fill="#EFE4CF" font-family="Instrument Serif, Georgia, serif" font-size="20">${five == null ? '—' : five + '%'}</text>
+  </svg><span class="who" style="color:${color}">${name} · 5 h${reading && reading.blocked ? ' · blocked' : ''}</span><span class="wk">${week == null ? 'run the usage check' : `week ${week}% · line at 60%`}</span></div>`
+}
+function sparkline(values) {
+  const max = Math.max(...values, 0.0001), n = values.length
+  const pts = values.map((v, i) => `${(i / (n - 1)) * 120},${17 - (v / max) * 15}`).join(' ')
+  const lastY = 17 - (values[n - 1] / max) * 15
+  return `<svg viewBox="0 0 120 18" preserveAspectRatio="none" aria-hidden="true"><polygon points="0,18 ${pts} 120,18" fill="rgba(255,196,94,.14)"/>
+    <polyline points="${pts}" fill="none" stroke="#FFC45E" stroke-width="1.2" vector-effect="non-scaling-stroke"/><circle cx="119" cy="${lastY}" r="1.8" fill="#FFC45E"/></svg>`
+}
+function notesFrom(x, y, k, color) {
+  let out = ''
+  for (let n = 0; n < 3; n++) {
+    const drift = (n % 2 ? -1 : 1) * (10 + n * 4)
+    out += `<g transform="translate(${x + n * 9} ${y})"><g class="note" style="--dx:${drift}px;animation-delay:${-(k * 0.9 + n * 1.15)}s">`
+      + `<path d="${NOTE_SHAPES[(k + n) % 3]}" fill="${color}" stroke="${color}" stroke-width="1.3" stroke-linecap="round"/></g></g>`
+  }
+  return out
 }
 
-function renderHeader() {
-  $('repo').textContent = board.repo
-  const accounts = board.accounts || {}
-  $('gauges').innerHTML = gauge('claude', accounts.claude) + gauge('chatgpt', accounts.chatgpt)
-  const t = board.totals
-  $('spend').innerHTML = `<div class="total">${money(t.total_cost_usd)}</div>
-    <small>API-equivalent estimate, all runs</small>
-    <div class="split"><span class="claude">Claude ${money(t.claude.cost_usd)}</span><span class="chatgpt">ChatGPT ${money(t.chatgpt.cost_usd)}</span></div>`
-  const warnings = (board.git && board.git.warnings) || []
-  $('warnings').hidden = warnings.length === 0
-  $('warnings').innerHTML = warnings.length ? `<strong>Git needs attention on ${esc(board.git.branch)}</strong><ul>${warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''
-  const asOf = accounts.as_of ? `usage as of ${new Date(accounts.as_of).toLocaleTimeString()}` : 'no usage reading yet'
-  $('status').textContent = `Updated ${new Date(board.generated).toLocaleTimeString()}, ${asOf}. ${board.prices_note}.`
+/* ---------- the stage ---------- */
+function renderStage() {
+  if (!active) return
+  const runs = active.runs.filter((r) => !filter || r.repo === filter)
+  const ensembles = runs.filter((r) => !['done', 'paused'].includes(r.phase) && !r.quiet)
+  const all = ensembles.flatMap(live)
+  const waiting = runs.flatMap(stuck).length
+  const repos = new Set(active.runs.map((r) => r.repo)).size
+  $('where').textContent = `${repos} checkout${repos === 1 ? '' : 's'} · ${active.runs.length} run${active.runs.length === 1 ? '' : 's'}`
+  $('headline').innerHTML = all.length
+    ? `${ensembles.length} ensemble${ensembles.length === 1 ? '' : 's'}, <em>${all.length} player${all.length === 1 ? '' : 's'}</em> on stage.`
+    : ensembles.length ? `${ensembles.length} chief${ensembles.length === 1 ? '' : 's'} at the podium.` : 'The stage is quiet.'
+  const onClaude = all.filter((a) => a.provider === 'claude').length, onGpt = all.length - onClaude
+  $('sub').textContent = all.length
+    ? `${onClaude} on Claude, ${onGpt} on ChatGPT${waiting ? `, ${waiting} waiting for you` : ''}.`
+    : ensembles.length ? `No agent is playing right now${waiting ? `; ${waiting} waiting for you` : ''}.` : 'The next chief run lights the stage.'
+  const spend = active.spend || { all_runs: 0, last_24h: 0, burn_per_hour: 0, buckets: [0, 0] }
+  $('ledger').innerHTML = `<div><span class="label">all runs</span><span class="v">${money(spend.all_runs)}</span><span class="mix">API-equivalent</span></div>
+    <div><span class="label">last 24 h</span><span class="v">${money(spend.last_24h)}</span>${sparkline(spend.buckets)}</div>
+    <div><span class="label">burn rate</span><span class="v">${money(spend.burn_per_hour)}<small>/ h</small></span><span class="mix">last 60 min</span></div>`
+  const accounts = active.accounts || {}
+  $('meters').innerHTML = meter('Claude', accounts.claude, '#D4703C') + meter('ChatGPT', accounts.chatgpt, '#74B9A7')
+
+  // Ensembles share a row while robots stay at least MIN_UNIT wide; past that they wrap onto another row.
+  const W = 1200, GAP = 0.45, MIN_UNIT = 104, MAX_UNIT = 126
+  const width = (r) => 1.25 + Math.max(live(r).length, 1)
+  const rowSlots = (row) => row.reduce((n, r) => n + width(r), 0) + GAP * Math.max(row.length - 1, 0)
+  const rows = []
+  ensembles.forEach((r) => { const last = rows[rows.length - 1]; if (last && rowSlots([...last, r]) * MIN_UNIT <= W - 40) last.push(r); else rows.push([r]) })
+  const unit = Math.min(MAX_UNIT, ...rows.map((row) => (W - 40) / Math.max(rowSlots(row), 1)))
+  const s = Math.min(0.72, unit / 175)
+  const floorOff = Math.round(130 + 150 * s), rowH = floorOff + 42
+  let out = `<defs><linearGradient id="slipG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#21160D"/><stop offset="1" stop-color="#1D130B"/></linearGradient></defs>`
+  rows.forEach((row, ri) => {
+    const top = ri * rowH, floor = top + floorOff
+    out += `<rect x="0" y="${floor - 6}" width="${W}" height="${rowH - floorOff + 6}" fill="#0B0705"/><path d="M 0 ${floor - 6} H ${W}" stroke="#6B4A1C" stroke-width="1.5"/>`
+    let x = Math.max(20, (W - rowSlots(row) * unit) / 2) + unit * 0.55
+    row.forEach((r) => {
+      const group0 = x - unit * 0.55, L = live(r)
+      let g = `<use href="#podium" x="${x - 52 * s}" y="${floor - 44 * s}" width="${104 * s}" height="${44 * s}"/>`
+      g += `<g transform="translate(${x} ${floor - 44 * s}) scale(${s * 0.78})"><g class="${L.length ? 'lead' : ''}"><use href="#r-conductor" x="-90" y="-200" width="180" height="210"/></g></g>`
+      x += unit * 1.25
+      L.forEach((a, k) => {
+        const kind = instrument(a)
+        const tempo = { trumpet: 1.6, clarinet: 2.1, violin: 2.4, cello: 3, bass: 3.4 }[kind]
+        g += `<circle class="glow" style="animation-delay:${-k * 1.3}s" cx="${x + 9 * s}" cy="${floor - 86 * s}" r="${72 * s}" fill="url(#lamp)" opacity=".9"/>`
+        g += `<g transform="translate(${x} ${floor - 46 * s}) scale(${s})"><g class="play" style="animation-duration:${tempo}s;animation-delay:${-k * 0.7}s">`
+          + `<use href="#r-${kind}" x="-80" y="-150" width="160" height="200" class="${a.provider === 'chatgpt' ? 'patina' : ''}"/></g></g>`
+        g += notesFrom(x - 18 * s, floor - 150 * s, k, a.provider === 'chatgpt' ? '#9FD4C5' : '#FFD27A')
+        const cap = `${a.role}${a.task !== '-' ? ' T' + a.task : ''} · ${short(a.model)}`
+        g += `<text x="${x}" y="${floor + 18}" text-anchor="middle" fill="${a.provider === 'claude' ? '#D4703C' : '#74B9A7'}" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="500">${esc(fit(cap, unit - 6, 7))}</text>`
+        g += `<text x="${x}" y="${floor + 32}" text-anchor="middle" fill="#B3A285" font-family="IBM Plex Mono, monospace" font-size="11">${esc(fit((a.acts && a.acts[0] || ['', a.description || ''])[1], unit - 6, 6.7))}</text>`
+        x += unit
+      })
+      if (!L.length) { g += `<text x="${x}" y="${floor - 30}" text-anchor="middle" fill="#B3A285" font-family="Instrument Serif, serif" font-style="italic" font-size="18">chief thinking</text>`; x += unit }
+      const group1 = x - unit * 0.5, plateW = group1 - group0 - 8, mid = (group0 + group1) / 2
+      const detail = `${repoName(r.repo)} · ${L.length} playing · ${dur(r.started, r.ended)}`
+      g += `<g class="plate"><rect x="${group0 + 4}" y="${top + 12}" width="${plateW}" height="52" rx="13" fill="url(#slipG)" stroke="rgba(228,176,74,.22)" stroke-width="1.5"/>`
+      g += `<text x="${mid}" y="${top + 36}" text-anchor="middle" fill="#EFE4CF" font-family="Instrument Serif, Georgia, serif" font-size="20">${esc(fit(r.title, plateW - 20, 8.6))}</text>`
+      g += `<text x="${mid}" y="${top + 54}" text-anchor="middle" fill="#B3A285" font-family="IBM Plex Mono, monospace" font-size="11.5">${esc(fit(detail, plateW - 20, 6.9))}</text></g>`
+      out += `<g class="player" data-run="${esc(r.key)}" tabindex="0" role="button" aria-label="Open ${esc(r.title)}">${g}</g>`
+      x += unit * GAP
+    })
+  })
+  let height = rows.length * rowH
+  if (!ensembles.length) {
+    height = 120
+    out += `<text x="600" y="62" text-anchor="middle" fill="#B3A285" font-family="Instrument Serif, serif" font-size="24" font-style="italic">No run is playing. The next chief run lights the stage.</text>`
+  }
+  $('scene').setAttribute('viewBox', `0 0 ${W} ${height}`)
+  $('scene').innerHTML = out
 }
 
-function chip(agent) {
-  const state = agent.superseded ? 'superseded' : agent.status
-  const title = `${PROVIDER[agent.provider]} ${agent.model || ''}, ${agent.role}${agent.task !== '-' ? ' task ' + agent.task : ''}, ${agent.status}`
-  const task = agent.task && agent.task !== '-' ? 'T' + agent.task + ' ' : ''
-  return `<span class="chip ${agent.provider} ${esc(state)}" title="${esc(title)}"><span class="dot"></span>${esc(task + agent.role)} ${esc(shortModel(agent.model))}</span>`
+/* ---------- toolbar, notices, programme ---------- */
+function renderBar() {
+  const runs = board() ? board().runs : []
+  const repos = [...new Set(runs.map((r) => r.repo))]
+  if (filter && !repos.includes(filter) && view === 'active') filter = null
+  $('filters').innerHTML = repos.length < 2 ? '' : [`<button class="chip" type="button" data-repo="" aria-pressed="${!filter}">all · ${runs.length}</button>`]
+    .concat(repos.map((p) => `<button class="chip" type="button" data-repo="${esc(p)}" title="${esc(p)}" aria-pressed="${filter === p}">${esc(repoName(p))} · ${runs.filter((r) => r.repo === p).length}</button>`)).join('')
+  const count = active ? active.archived_count : 0
+  $('archived-toggle').textContent = view === 'archived' ? 'back to the programme' : `archived · ${count}`
+  $('archived-toggle').setAttribute('aria-pressed', view === 'archived')
+  const notices = (active ? active.repos : []).filter((r) => (!filter || r.repo === filter) && r.git && (r.git.warnings || []).length)
+  $('notices').innerHTML = view === 'archived' ? '' : notices.map((r) => `<div class="notice"><b>git · ${esc(r.name)}${r.git.branch ? ' · ' + esc(r.git.branch) : ''}</b><ul>${r.git.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>`).join('')
+  const b = board()
+  $('status').textContent = b ? `Updated ${new Date(b.generated).toLocaleTimeString()}${b.accounts && b.accounts.as_of ? `, usage as of ${new Date(b.accounts.as_of).toLocaleTimeString()}` : ', no usage reading yet'}. ${b.prices_note}.` : ''
 }
-
-function card(run) {
-  const t = run.totals
-  const live = run.agents.filter((a) => a.status === 'running').length
-  return `<button class="card" type="button" data-run="${esc(run.id)}">
-    <h3>${esc(run.title)}</h3>
-    <div class="source">${esc(run.source)}, ${since(run.started, run.ended)}${live ? `, ${live} running` : ''}</div>
-    <div class="chips">${run.agents.map(chip).join('') || '<span class="note">No agents yet</span>'}</div>
-    <div class="cost"><span class="claude">Claude ${money(t.claude.cost_usd)}</span><span class="chatgpt">ChatGPT ${money(t.chatgpt.cost_usd)}</span><span class="sum">${money(t.total_cost_usd)}</span></div>
+function roleMix(r) {
+  const c = {}
+  players(r).forEach((a) => { c[a.kind] = (c[a.kind] || 0) + 1 })
+  return ORDER.filter((k) => c[k]).map((k) => `${k} <b>${c[k]}</b>`).join(' · ')
+}
+function card(r) {
+  const done = r.phase === 'done', L = live(r), blocked = stuck(r).length
+  const c = cost(r, 'claude'), g = cost(r, 'chatgpt'), t = c + g
+  const tasks = r.tasks || []
+  return `<button class="card slip ${done ? 'done' : ''} ${r.quiet ? 'quiet' : ''}" type="button" data-run="${esc(r.key)}">
+    <div class="where"><span title="${esc(r.repo)}">${esc(repoName(r.repo))} · ${esc(r.source)}</span><span>${dur(r.started, r.ended)}</span></div>
+    <h3>${esc(r.title)}</h3>
+    ${cardStaff(r)}
+    <div class="stats"><span class="count">${players(r).length}<small>players</small></span>
+      ${L.length ? `<span class="flag live"><span class="bulb"></span>${L.length} playing</span>` : ''}
+      ${blocked ? `<span class="flag bad"><span class="bulb"></span>${blocked} blocked</span>` : ''}
+      ${r.quiet ? `<span>quiet for ${dur(r.last_activity)}</span>` : ''}
+      ${tasks.length ? `<span>tasks ${tasks.filter((x) => x.status === 'done').length}/${tasks.length}</span>` : ''}</div>
+    ${players(r).length ? `<div class="mix">${roleMix(r)}</div>` : ''}
+    <div class="cost"><div class="split" title="Claude ${money(c)} · ChatGPT ${money(g)}"><span class="c" style="width:${t ? c / t * 100 : 0}%"></span><span class="g" style="width:${t ? g / t * 100 : 0}%"></span></div><span class="sum">${money(t)}</span></div>
   </button>`
 }
-
-function renderBoard() {
-  $('board').innerHTML = COLUMNS.map((column) => {
-    const runs = board.runs.filter((run) => column.phases.includes(run.phase))
-    if (column.quiet && runs.length === 0) return ''
-    return `<section class="col ${column.quiet ? 'quiet' : ''}"><h2><span>${column.label}</span><span class="count">${runs.length || ''}</span></h2>
-      ${runs.map(card).join('') || '<div class="empty">Nothing here</div>'}</section>`
+function renderProgramme() {
+  const runs = visible()
+  if (!board()) return
+  if (!runs.length) {
+    $('prog').innerHTML = `<p class="empty" style="flex:1">${view === 'archived' ? 'Nothing archived yet.' : 'No runs yet. Start one with /chief and a task.'}</p>`
+    return
+  }
+  if (view === 'archived') {
+    $('prog').innerHTML = `<section class="col"><div class="col-head"><h2>Archived</h2><span class="n">${runs.length}</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px">${runs.map(card).join('')}</div></section>`
+    return
+  }
+  $('prog').innerHTML = COLS.map(([key, label]) => {
+    const here = runs.filter((r) => column(r.phase) === key)
+    if (!here.length) return `<section class="col rail" aria-label="${label}: empty"><div class="col-head"><h2>${label}</h2><span class="n">0</span></div></section>`
+    let tools = `<span class="n">${here.length}</span>`
+    if (key === 'done') tools = `<span class="tools"><button class="link" type="button" id="archive-done">archive all</button><span class="n">${here.length}</span></span>`
+    const ask = key === 'done' && confirmDone ? `<div class="confirm slip"><span>Archive ${here.length} finished run${here.length === 1 ? '' : 's'}? They move to the archived view and their spend still counts in all runs.</span>
+      <div class="row"><button class="chip danger" type="button" id="archive-done-yes">archive ${here.length}</button><button class="chip" type="button" id="archive-done-no">keep them</button></div></div>` : ''
+    return `<section class="col ${here.some((r) => live(r).length) ? 'playing' : ''}"><div class="col-head"><h2>${label}</h2>${tools}</div>${ask}${here.map(card).join('')}</section>`
   }).join('')
 }
 
-function agentRows(run) {
-  return run.agents.map((agent) => `<tr class="agent ${openAgent === agent.id ? 'selected' : ''}" data-agent="${esc(agent.id)}" tabindex="0">
-    <td><span class="prov ${agent.provider}">${PROVIDER[agent.provider]}</span></td>
-    <td>${esc(agent.model || '?')}${agent.effort ? ' (' + esc(agent.effort) + ')' : ''}</td>
-    <td>${esc(agent.role)}</td><td>${esc(agent.task)}</td>
-    <td>${esc(agent.superseded ? 'resumed later' : agent.status)}</td>
-    <td class="num">${compact(tokensOf(agent))}</td>
-    <td class="num">${agent.superseded ? '—' : money(agent.cost_usd)}</td>
-    <td class="num">${since(agent.started, agent.ended)}</td></tr>`).join('')
+/* ---------- the score ---------- */
+function measures(r) {
+  // Each phase is a measure, as wide as the time spent in it; a phase entered twice adds up.
+  const spans = []
+  ;(r.phases || []).forEach((p, i, all) => {
+    if (p.phase === 'done') return
+    const until = all[i + 1] ? all[i + 1].at : (r.ended || new Date().toISOString())
+    const minutes = Math.max(0, (ms(until) - ms(p.at)) / 60000)
+    const last = spans[spans.length - 1]
+    if (last && last.phase === p.phase) last.minutes += minutes; else spans.push({ phase: p.phase, minutes })
+  })
+  if (!spans.length) return ''
+  const total = spans.reduce((s, x) => s + x.minutes, 0) || 1, W = 1000, cur = spans[spans.length - 1].phase
+  let x = 0, s = ''
+  for (let k = 0; k < 5; k++) s += `<path d="M 0 ${14 + k * 6} H ${W + 60}" stroke="rgba(228,176,74,.28)" stroke-width=".8"/>`
+  spans.forEach((p) => {
+    const w = Math.max(64, p.minutes / total * W)
+    const isCur = p.phase === cur && r.phase !== 'done'
+    if (isCur) s += `<rect x="${x}" y="14" width="${w}" height="24" fill="rgba(255,196,94,.14)"/>`
+    s += `<path d="M ${x} 14 V 38" stroke="rgba(228,176,74,.55)" stroke-width="1.2"/>`
+    s += `<text x="${x + 6}" y="54" fill="${isCur ? '#FFC45E' : '#EFE4CF'}" font-family="Instrument Serif, serif" font-style="italic" font-size="15">${esc(p.phase)}</text>`
+    s += `<text x="${x + 6}" y="10" fill="#B3A285" font-family="IBM Plex Mono, monospace" font-size="10">${p.minutes < 90 ? Math.round(p.minutes) + ' min' : (p.minutes / 60).toFixed(1) + ' h'}</text>`
+    x += w
+  })
+  s += `<path d="M ${x} 14 V 38 M ${x + 4} 14 V 38" stroke="rgba(228,176,74,.7)" stroke-width="1.6"/>`
+  return `<svg viewBox="0 0 ${x + 8} 60" preserveAspectRatio="none" role="img" aria-label="Time in each phase">${s}</svg>`
 }
-
-function renderDrawer() {
-  const run = board && board.runs.find((r) => r.id === openRun)
-  if (!run) return
-  const t = run.totals
-  $('d-title').textContent = run.title
-  $('d-sub').textContent = `${run.id}, ${run.source}, phase ${run.phase}`
-  const phases = (run.phases || []).map((p, i, all) => `<span class="${i === all.length - 1 ? 'now' : ''}">${esc(p.phase)} ${new Date(p.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>`).join('')
-  const selected = run.agents.find((a) => a.id === openAgent)
-  const files = ['task', 'plan', 'progress', 'handoff'].filter((name) => name === 'task' || (name === 'plan' ? run.plan : run.workspace))
-  $('d-body').innerHTML = `
-    <div class="timeline">${phases}</div>
-    <h3>Agents</h3>
-    <table><thead><tr><th>Provider</th><th>Model</th><th>Role</th><th>Task</th><th>Status</th><th class="num">Tokens</th><th class="num">API-eq $</th><th class="num">Time</th></tr></thead>
-    <tbody>${agentRows(run) || '<tr><td colspan="8" class="note">No agents have reported to this run yet. Briefs start with the run tag so they show up here.</td></tr>'}</tbody>
-    <tfoot>
-      <tr><td colspan="5">Claude subtotal</td><td class="num">${compact(t.claude.tokens)}</td><td class="num">${money(t.claude.cost_usd)}</td><td></td></tr>
-      <tr><td colspan="5">ChatGPT subtotal</td><td class="num">${compact(t.chatgpt.tokens)}</td><td class="num">${money(t.chatgpt.cost_usd)}</td><td></td></tr>
-      <tr><td colspan="6">Total, API-equivalent estimate</td><td class="num">${money(t.total_cost_usd)}</td><td></td></tr>
-    </tfoot></table>
-    ${t.claude.unpriced + t.chatgpt.unpriced ? `<p class="note">${t.claude.unpriced + t.chatgpt.unpriced} agent(s) ran on a model with no price in prices.json and are left out of the totals.</p>` : ''}
-    ${selected ? `<h3>${esc(selected.role)} ${selected.task !== '-' ? 'task ' + esc(selected.task) : ''}, ${esc(selected.description || selected.model || '')}</h3><pre class="doc">${esc(selected.report || 'No reply yet.')}</pre>` : '<p class="note">Select an agent to read its reply.</p>'}
-    <h3>Files</h3>
-    <div class="files">${files.map((name) => `<button type="button" data-file="${name}" aria-pressed="${openFile === name}">${name[0].toUpperCase() + name.slice(1)}</button>`).join('')}</div>
-    <pre class="doc" id="d-file" ${openFile ? '' : 'hidden'}></pre>`
-  if (openFile) loadFile(run.id, openFile)
+function figure(kind, vb, extra = '') {
+  const [x, y, w, h] = vb.split(' ')
+  return `<use href="#r-${kind}" x="${x}" y="${y}" width="${w}" height="${h}" ${extra}/>`
 }
-
-async function loadFile(runId, name) {
-  const target = $('d-file')
+function renderScore() {
+  const r = allRuns().find((x) => x.key === openKey)
+  if (!r) return closeScore()
+  const c = cost(r, 'claude'), g = cost(r, 'chatgpt')
+  let tasks = ''
+  if ((r.tasks || []).length) {
+    const areas = {}
+    r.tasks.forEach((x) => { if (!x.area) return; areas[x.area] = areas[x.area] || { n: 0, d: 0 }; areas[x.area].n++; if (x.status === 'done') areas[x.area].d++ })
+    const st = (x) => ({ done: 'done', build: 'building', review: 'in review', fix: `fix round ${x.round || 1}`, queued: 'waiting', blocked: 'blocked, needs you' })[x.status] || x.status
+    const waves = [...new Set(r.tasks.map((x) => x.wave || ''))]
+    tasks = `<section><div class="sec-head"><h3>Plan tasks</h3><div class="areas">${Object.entries(areas).map(([k, v]) => `<span class="area">${esc(k)}<em>${v.d}/${v.n}</em></span>`).join('')}</div></div>
+      ${waves.map((w) => `<div class="wave">${waves.length > 1 || w ? `<div class="wave-name">${esc(w || 'Not in a wave')}</div>` : ''}<div class="wave-tasks">${r.tasks.filter((x) => (x.wave || '') === w).map((x) => `
+        <div class="task ${esc(x.status)}"><svg viewBox="0 0 22 30">${noteHead(8, 24, x.status, 4.2)}</svg>
+          <div class="tt"><span>T${esc(x.id)}${x.area ? ' · ' + esc(x.area) : ''}</span><span>${esc(x.who ? short(x.who) : '')}</span></div><div class="nm">${esc(x.name)}</div><div class="st">${esc(st(x))}</div></div>`).join('')}</div></div>`).join('')}</section>`
+  }
+  const groups = {}
+  r.agents.forEach((a) => { (groups[a.kind] = groups[a.kind] || []).push(a) })
+  const sections = ORDER.filter((k) => groups[k]).map((kind) => {
+    const list = groups[kind], sum = list.reduce((s, a) => s + (a.superseded ? 0 : a.cost_usd || 0), 0), playing = list.filter((a) => a.status === 'running').length
+    const icon = kind === 'chief' ? `<svg viewBox="-90 -200 180 210">${figure('conductor', '-90 -200 180 210')}</svg>`
+      : `<svg viewBox="-80 -150 160 200">${figure(INSTRUMENT[kind] || 'violin', '-80 -150 160 200')}</svg>`
+    return `<div class="section"><div class="section-head">${icon}<h4>${kind}</h4><span class="mix">${list.length} · ${playing ? `<span style="color:var(--lamp)">${playing} playing</span> · ` : ''}${money(sum)}</span></div>
+      <div class="table-wrap"><table><tbody>${list.map((a) => `<tr class="agent ${openAgent === a.id ? 'sel' : ''}" data-agent="${esc(a.id)}" tabindex="0">
+        <td><span class="prov ${a.provider}">${a.provider === 'claude' ? 'Claude' : 'ChatGPT'}</span></td>
+        <td class="mono" style="font-size:12px">${esc(short(a.model))}${a.effort ? ' · ' + esc(a.effort) : ''}</td>
+        <td class="mono" style="font-size:12px;color:var(--muted)">${a.role !== kind ? esc(a.role) + ' ' : ''}${a.task !== '-' ? 'T' + esc(a.task) : ''}</td>
+        <td><span class="state ${esc(a.status)}"><span class="bulb"></span>${esc(a.superseded ? 'resumed later' : String(a.status).replace('_', ' '))}</span></td>
+        <td class="num">${dur(a.started, a.ended)}</td><td class="num">${a.superseded ? '—' : money(a.cost_usd)}</td></tr>`).join('')}</tbody></table></div></div>`
+  }).join('') || '<p class="mix">No agents have reported to this run yet. Briefs start with the run tag so they show up here.</p>'
+  const sel = r.agents.find((a) => a.id === openAgent) || stuck(r)[0] || live(r)[0] || r.agents.find((a) => a.kind !== 'chief') || r.agents[0]
+  let side = ''
+  if (sel) {
+    const kind = sel.kind === 'chief' ? 'conductor' : instrument(sel)
+    const vb = kind === 'conductor' ? '-90 -200 180 210' : '-80 -150 160 200'
+    const lit = sel.status === 'running'
+    side = `<div class="portrait"><svg viewBox="${vb}">${lit ? '<circle cx="9" cy="-40" r="70" fill="url(#lamp)"/>' : ''}<g class="${lit ? 'play' : ''}">${figure(kind, vb, `class="${sel.provider === 'chatgpt' ? 'patina' : ''}" style="${lit ? '' : 'opacity:.6'}"`)}</g></svg>
+      <div><h3>${esc(sel.role)}${sel.task !== '-' ? ' · T' + esc(sel.task) : ''}</h3><div class="mix"><span class="prov ${sel.provider}">${sel.provider === 'claude' ? 'Claude' : 'ChatGPT'}</span> · ${esc(short(sel.model))} · ${dur(sel.started, sel.ended)} · ${money(sel.cost_usd)}</div>
+      <div style="margin-top:6px"><span class="state ${esc(sel.status)}"><span class="bulb"></span>${esc(String(sel.status).replace('_', ' '))}${sel.verdict ? ' · ' + esc(sel.verdict.toLowerCase().replace(/_/g, ' ')) : ''}</span></div>
+      ${sel.description ? `<div class="mix" style="margin-top:4px">${esc(sel.description)}</div>` : ''}</div></div>
+      ${(sel.acts || []).length ? `<div><div class="label" style="margin-bottom:6px">${lit ? 'now playing' : 'last tool calls'}</div><div class="acts">${sel.acts.map(([t, w]) => `<div><span>${esc(ago(t))}</span><span>${esc(w)}</span></div>`).join('')}</div></div>` : ''}
+      ${sel.kind !== 'chief' ? `<div><div class="label" style="margin-bottom:6px">reply</div><pre class="reply">${esc(sel.report || (lit ? 'No reply yet. The agent is still playing.' : 'No reply.'))}</pre></div>` : ''}`
+  }
+  const files = ['task', 'plan', 'progress', 'handoff'].filter((n) => n === 'task' || (n === 'plan' ? r.plan : r.workspace))
+  side += `<div><div class="label" style="margin-bottom:6px">run files</div><div class="files">${files.map((n) => `<button class="chip" type="button" data-file="${n}" aria-pressed="${openFile === n}">${n}</button>`).join('')}</div>
+    <pre class="reply" id="file-view" style="margin-top:8px" ${openFile ? '' : 'hidden'}></pre></div>`
+  const scroll = [...document.querySelectorAll('.s-main, .s-side')].map((el) => el.scrollTop)
+  const archivable = r.phase === 'done' || r.phase === 'paused' || r.quiet || r.archived
+  const action = r.archived ? `<button class="close" type="button" data-archive="restore">restore</button>`
+    : archivable ? `<button class="close" type="button" data-archive="archive">archive</button>` : ''
+  $('score').innerHTML = `
+    <div class="s-head"><div><span class="label">${esc(r.source)} · ${esc(r.phase)}${r.quiet ? ` · quiet for ${dur(r.last_activity)}` : ''}${r.archived ? ' · archived' : ''}</span><h2 id="s-title">${esc(r.title)}</h2>
+      <div class="meta"><b title="${esc(r.repo)}">${esc(repoName(r.repo))}</b><span>${esc(r.id)}</span><span>${dur(r.started, r.ended)}</span><span>${players(r).length} players</span></div></div>
+      <div class="tot"><div><span class="label" style="color:var(--claude)">claude</span><div class="v">${money(c)}</div></div>
+        <div><span class="label" style="color:var(--gpt)">chatgpt</span><div class="v">${money(g)}</div></div>
+        <div><span class="label">total</span><div class="v">${money(c + g)}</div></div>
+        <div class="actions">${action}<button class="close" id="close" type="button">close · esc</button></div></div></div>
+    <div class="measures">${measures(r)}</div>
+    <div class="s-body"><div class="s-main">${tasks}<section><div class="sec-head"><h3>Sections</h3><span class="mix">pick a player to read it</span></div>${sections}</section></div><aside class="s-side">${side}</aside></div>`
+  document.querySelectorAll('.s-main, .s-side').forEach((el, i) => { el.scrollTop = scroll[i] || 0 })
+  if (openFile) loadFile(r.key, openFile)
+}
+async function loadFile(key, name) {
   try {
-    const res = await fetch(`/file?run=${encodeURIComponent(runId)}&name=${encodeURIComponent(name)}`, { cache: 'no-store' })
-    target.textContent = res.ok ? await res.text() : `The ${name} file is not there yet.`
-  } catch { target.textContent = 'The dashboard server stopped. Start it again with chief-run.py serve.' }
+    const res = await fetch(`/file?run=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, { cache: 'no-store' })
+    const text = res.ok ? await res.text() : `The ${name} file is not there yet.`
+    if ($('file-view')) $('file-view').textContent = text
+  } catch { if ($('file-view')) $('file-view').textContent = 'The dashboard server stopped. The next chief run starts it again.' }
+}
+function openScore(key) { if (openKey !== key) { openAgent = null; openFile = null } openKey = key; $('score').hidden = false; $('curtain').hidden = false; renderScore(); if ($('close')) $('close').focus() }
+function closeScore() { openKey = null; $('score').hidden = true; $('curtain').hidden = true }
+
+/* ---------- archive ---------- */
+async function archive(keys, restore) {
+  const res = await fetch('/archive', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Chief-Dashboard': '1' }, body: JSON.stringify({ keys, archived: !restore }) })
+  if (!res.ok) { $('status').textContent = 'Archiving failed: ' + (await res.text()); return }
+  lastActive = lastArchived = ''
+  await poll()
 }
 
-function openDrawer(runId) {
-  if (openRun !== runId) { openAgent = null; openFile = null }
-  openRun = runId
-  $('drawer').classList.add('open'); $('drawer').setAttribute('aria-hidden', 'false')
-  renderDrawer(); $('d-close').focus()
-}
-function closeDrawer() {
-  openRun = null; $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true')
-}
-
-$('board').addEventListener('click', (event) => { const target = event.target.closest('[data-run]'); if (target) openDrawer(target.dataset.run) })
-$('d-close').addEventListener('click', closeDrawer)
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeDrawer() })
-$('d-body').addEventListener('click', (event) => {
-  const row = event.target.closest('[data-agent]')
-  if (row) { openAgent = openAgent === row.dataset.agent ? null : row.dataset.agent; renderDrawer(); return }
-  const file = event.target.closest('[data-file]')
-  if (file) { openFile = openFile === file.dataset.file ? null : file.dataset.file; renderDrawer() }
+/* ---------- events, polling ---------- */
+document.addEventListener('click', async (e) => {
+  const t = e.target
+  if (t.closest('#archive-done')) { confirmDone = true; renderProgramme(); return }
+  if (t.closest('#archive-done-no')) { confirmDone = false; renderProgramme(); return }
+  if (t.closest('#archive-done-yes')) {
+    confirmDone = false
+    await archive(visible().filter((r) => r.phase === 'done').map((r) => r.key), false); return
+  }
+  const arch = t.closest('[data-archive]')
+  if (arch) { const key = openKey; closeScore(); await archive([key], arch.dataset.archive === 'restore'); return }
+  if (t.closest('#archived-toggle')) { view = view === 'archived' ? 'active' : 'archived'; filter = null; await poll(); renderAll(); return }
+  if (t.closest('#close')) return closeScore()
+  const file = t.closest('[data-file]')
+  if (file) { openFile = openFile === file.dataset.file ? null : file.dataset.file; renderScore(); return }
+  const agent = t.closest('[data-agent]')
+  if (agent) { openAgent = agent.dataset.agent; renderScore(); return }
+  const run = t.closest('[data-run]')
+  if (run) return openScore(run.dataset.run)
+  const repo = t.closest('[data-repo]')
+  if (repo) {
+    filter = repo.dataset.repo || null
+    const p = new URLSearchParams(location.search)
+    if (filter) p.set('repo', filter); else p.delete('repo')
+    history.replaceState(null, '', p.toString() ? '?' + p : location.pathname)
+    renderAll()
+  }
 })
-$('d-body').addEventListener('keydown', (event) => { if (event.key === 'Enter' && event.target.matches('[data-agent]')) event.target.click() })
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeScore()
+  if (e.key === 'Enter' && e.target.matches('[data-agent], .player')) e.target.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+})
+$('curtain').addEventListener('click', closeScore)
 
+function renderAll() { renderStage(); renderBar(); renderProgramme(); if (openKey) renderScore() }
 async function poll() {
   try {
     const res = await fetch('/board.json', { cache: 'no-store' })
     const text = await res.text()
-    if (text === lastBoard) return
-    lastBoard = text
-    board = JSON.parse(text)
-    renderHeader(); renderBoard()
-    const linked = new URLSearchParams(location.search).get('run')
-    if (linked && !openRun && !poll.linkedOnce) { poll.linkedOnce = true; if (board.runs.some((r) => r.id === linked)) openDrawer(linked) }
-    else if (openRun && !openFile) renderDrawer()
+    let changed = text !== lastActive
+    if (changed) { lastActive = text; active = JSON.parse(text) }
+    if (view === 'archived') {
+      const res2 = await fetch('/board.json?view=archived', { cache: 'no-store' })
+      const text2 = await res2.text()
+      if (text2 !== lastArchived) { lastArchived = text2; archived = JSON.parse(text2); changed = true }
+    }
+    if (!changed) return
+    renderStage(); renderBar(); renderProgramme()
+    const linked = params.get('run')
+    if (linked && !linkedOnce) {
+      linkedOnce = true
+      const byKey = active.runs.find((r) => r.key === linked), byId = active.runs.filter((r) => r.id === linked)
+      const target = byKey || (byId.length === 1 ? byId[0] : null)
+      if (target) openScore(target.key)
+    } else if (openKey && !openFile) renderScore()
   } catch {
-    $('status').textContent = 'The dashboard server is not answering. Start it with: python3 <chief skill>/scripts/chief-run.py serve'
+    $('status').textContent = 'The dashboard server is not answering. The next chief run starts it again, or run: python3 <chief skill>/scripts/chief-run.py dashboard'
   }
 }
 poll()

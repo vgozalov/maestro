@@ -173,9 +173,36 @@ class SpawnHookTest(unittest.TestCase):
             project, home = Path(folder) / "p", Path(folder) / "h"
             (project / ".claude").mkdir(parents=True)
             (home / ".claude").mkdir(parents=True)
-            self.assertFalse(usage.spawn_hook_registered(str(project), str(home)))
+            no_plugin = Path(folder) / "none"
+            self.assertFalse(usage.spawn_hook_registered(str(project), str(home), no_plugin))
             (home / ".claude" / "settings.json").write_text('{"hooks": {"PreToolUse": [{"hooks": [{"command": "python3 usage-before-spawn.py"}]}]}}')
-            self.assertTrue(usage.spawn_hook_registered(str(project), str(home)))
+            self.assertTrue(usage.spawn_hook_registered(str(project), str(home), no_plugin))
+
+    def test_the_usage_hook_is_found_in_the_plugin_it_was_installed_with(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project, home, plugin = Path(folder) / "p", Path(folder) / "h", Path(folder) / "plugin"
+            (plugin / ".claude-plugin").mkdir(parents=True)
+            (plugin / "hooks").mkdir()
+            (plugin / ".claude-plugin" / "plugin.json").write_text('{"name": "maestro"}')
+            self.assertFalse(usage.spawn_hook_registered(str(project), str(home), plugin))
+            (plugin / "hooks" / "claude-code.json").write_text('{"hooks": {"PreToolUse": [{"hooks": [{"command": "python3 usage-before-spawn.py"}]}]}}')
+            self.assertTrue(usage.spawn_hook_registered(str(project), str(home), plugin))
+
+    def test_this_repo_registers_the_hook_as_a_plugin(self):
+        self.assertTrue(usage.spawn_hook_registered("/nonexistent", "/nonexistent"))
+
+
+class ChiefRunGateTest(RepoTestCase):
+    def test_the_gate_follows_the_run_marker(self):
+        spawn_hook = load_script("usage-before-spawn")
+        self.assertFalse(spawn_hook.chief_run_active(str(self.repo)))
+        git_check.set_run_marker(str(self.repo), True)
+        self.assertTrue(spawn_hook.chief_run_active(str(self.repo)))
+
+    def test_outside_git_the_gate_is_closed(self):
+        spawn_hook = load_script("usage-before-spawn")
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertFalse(spawn_hook.chief_run_active(folder))
 
 
 if __name__ == "__main__":

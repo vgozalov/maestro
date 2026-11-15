@@ -8,8 +8,8 @@ Agent skills for running coding agents in parallel without collisions, writing p
 
 <br>
 
-[![tests](https://img.shields.io/github/actions/workflow/status/vgozalov/skills/test.yml?branch=main&style=flat-square&label=tests&labelColor=17110C)](https://github.com/vgozalov/skills/actions/workflows/test.yml)
-[![license](https://img.shields.io/github/license/vgozalov/skills?style=flat-square&labelColor=17110C&color=B88A34)](./LICENSE)
+[![tests](https://img.shields.io/github/actions/workflow/status/vgozalov/maestro/test.yml?branch=main&style=flat-square&label=tests&labelColor=17110C)](https://github.com/vgozalov/maestro/actions/workflows/test.yml)
+[![license](https://img.shields.io/github/license/vgozalov/maestro?style=flat-square&labelColor=17110C&color=B88A34)](./LICENSE)
 [![agents](https://img.shields.io/badge/agents-Claude%20Code%20%2B%20Codex-D4703C?style=flat-square&labelColor=17110C)](#install)
 [![bash](https://img.shields.io/badge/bash-3.2%20to%205-E4B04A?style=flat-square&labelColor=17110C)](#development)
 
@@ -28,14 +28,14 @@ Every skill here is a plain `SKILL.md` folder with a name of its own, so it inst
 
 ## Install
 
-**Let your agent do it.** Tell Claude Code or Codex: *"Install the skills from https://github.com/vgozalov/skills following its INSTALL.md."* [INSTALL.md](./INSTALL.md) walks the agent through the skills, the `chief` agent, the usage hook, auto-save hooks, the `AGENTS.md` block and a final check, asking you only what it must.
+**Let your agent do it.** Tell Claude Code or Codex: *"Install the skills from https://github.com/vgozalov/maestro following its INSTALL.md."* [INSTALL.md](./INSTALL.md) walks the agent through the skills, the `chief` agent, the usage hook, auto-save hooks, the `AGENTS.md` block and a final check, asking you only what it must.
 
 Or by hand; none of these need a clone.
 
 ### Just these skills
 
 ```bash
-npx skills@latest add vgozalov/skills -a claude-code -a codex
+npx skills@latest add vgozalov/maestro -a claude-code -a codex
 ```
 
 Swap in any agent the `skills` CLI supports (`cursor`, `opencode`, `windsurf`, `amp`, and more), or omit `-a` to choose interactively. `wrap-up`, `create-sprint` and `parallel-briefs` work on their own. `parallel-plans` and `parallel-build` work as a pair and hand off only to skills in this repo (`using-git-worktrees`, `requesting-code-review`, `finishing-a-development-branch`, `executing-plans`, and through them `test-driven-development`, `systematic-debugging` and `verification-before-completion`), so install them together. `chief` uses all of them plus `model-routing`.
@@ -47,16 +47,16 @@ For repos that pull skills from several sources, list them in `.agents/skills.tx
 ```
 # source                  skills ("*" = all)
 anthropics/skills         frontend-design webapp-testing
-vgozalov/skills           *
+vgozalov/maestro           *
 ```
 
 Then, from the repo root, run the script straight from GitHub (add `-s -- --dry-run` after `bash` to preview), or from a clone with `<clone>/install.sh`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vgozalov/skills/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/vgozalov/maestro/main/install.sh | bash
 ```
 
-It installs every line for Claude Code and Codex, installs `vgozalov/skills` last whatever its position in the file, pins the CLI to `skills@1.7.2`, and turns off the CLI's telemetry. [More in how installing works](#how-installing-works).
+It installs every line for Claude Code and Codex, installs `vgozalov/maestro` last whatever its position in the file, pins the CLI to `skills@1.7.2`, and turns off the CLI's telemetry. [More in how installing works](#how-installing-works).
 
 <details>
 <summary><b>Then add the instructions block</b> to <code>AGENTS.md</code> (with <code>CLAUDE.md</code> symlinked to it)</summary>
@@ -114,7 +114,7 @@ npx skills@latest add anthropics/skills -g -s docx pdf xlsx pptx doc-coauthoring
 or the manifest version, which installs [`global.txt`](./global.txt): those six plus `claude-md-improver` and `claude-automation-recommender`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vgozalov/skills/main/install.sh | bash -s -- --global
+curl -fsSL https://raw.githubusercontent.com/vgozalov/maestro/main/install.sh | bash -s -- --global
 ```
 
 </details>
@@ -157,10 +157,16 @@ It defaults to Opus; started on Sonnet it runs as a Sonnet chief with a lower ce
 ### The run dashboard
 
 ```bash
-python3 .claude/skills/chief/scripts/chief-run.py serve   # http://127.0.0.1:8765
+python3 .claude/skills/chief/scripts/chief-run.py dashboard   # http://127.0.0.1:8765
 ```
 
-One card per run, in columns by phase, with a chip for every agent: Claude subagents and Codex jobs alike, found through the run tag that starts each brief. Each card shows a Claude subtotal, a ChatGPT subtotal and their sum as an API-equivalent estimate; the header shows both accounts' 5-hour and weekly use with the 60% switch line, plus any git-check warnings. Click a card for the agent table, each agent's reply, and the run's task, plan, progress and handoff. `chief-run.py summary <run id>` prints the same numbers for the final report. Prices are in `skills/model-routing/prices.json`; Rates come from the official Anthropic and OpenAI pricing pages (2026-11-12); update the file when they change.
+The stage at the top shows who is playing now: each live run is an ensemble, its chief the conductor and each working agent a brass robot under its own lamp, with its latest tool call underneath. The instrument is the role (violin research, clarinet plan and fix, cello implement, trumpet review, double bass git); brass is Claude, verdigris is ChatGPT. Beside it are the spend of all runs, the last 24 hours, the burn rate, and both accounts' 5-hour and weekly use with the 60% switch line. Below, one short card per run, in columns by phase; click one for its score: time per phase, plan tasks by wave and area, agents by section, each agent's recent tool calls and reply, and the run's task, plan, progress and handoff. Everything comes from files already on disk, so watching costs no tokens.
+
+Archive finished runs from their score, all at once from the Done column, or with `chief-run.py archive --done`; they move to the archived view, can be restored, and their spend still counts in the total. A run that stopped without finishing turns quiet after two hours with nothing happening, and can be archived too.
+
+The chief starts it for you: `chief-run.py start`, and each phase change, start the dashboard in the background when none answers, join it when one does, and replace a chief dashboard older than the script. It covers every repo and worktree on the machine: each run leaves a pointer in `~/.chief/runs/` (set `CHIEF_HOME` to move it), so chiefs running in parallel in different checkouts all show up, with a filter per repo and git warnings per checkout. A dashboard the chief started exits after 6 hours with no page open, and the next run brings it back; its log is `~/.chief/dashboard.log`. `CHIEF_DASHBOARD_PORT` changes the port, `CHIEF_DASHBOARD=off` turns the automatic start off, and `chief-run.py serve` still runs it in the foreground. Runs that ended more than 14 days ago move to the archived view (`--days`). Runs started before 1.1.0 join at their next phase change, or after `chief-run.py register` in their checkout.
+
+Agents are found through the run tag that starts each brief, Claude subagents and Codex jobs alike. Costs are API-equivalent estimates, kept per provider. `chief-run.py summary <run id>` prints the same numbers for the final report. Prices are in `skills/model-routing/prices.json`; Rates come from the official Anthropic and OpenAI pricing pages (2026-11-12); update the file when they change.
 
 <details>
 <summary><b>What model-routing needs on the machine</b></summary>
@@ -252,8 +258,8 @@ A few rules keep this predictable:
 
 - `--dry-run` prints the CLI commands instead of running them.
 - `--global` installs [`global.txt`](./global.txt) at user scope: `~/.agents/skills/`, symlinked from `~/.claude/skills/`.
-- `SKILLS_CLI`, `HOSTED_SOURCE` (default `vgozalov/skills`) and `MANIFEST` override the CLI command, the source installed last, and the manifest path.
-- The hosted line is recognised in any common spelling (`https://github.com/vgozalov/skills`, `.git`, `git@github.com:vgozalov/skills.git`, `github:vgozalov/skills`, a trailing `/`, with or without `#ref`), and is passed to the CLI exactly as written.
+- `SKILLS_CLI`, `HOSTED_SOURCE` (default `vgozalov/maestro`) and `MANIFEST` override the CLI command, the source installed last, and the manifest path.
+- The hosted line is recognised in any common spelling (`https://github.com/vgozalov/maestro`, `.git`, `git@github.com:vgozalov/maestro.git`, `github:vgozalov/maestro`, a trailing `/`, with or without `#ref`), as is the repo's former name `vgozalov/skills`, and it is passed to the CLI exactly as written.
 - If the script fails part-way, run it again before committing, because some skills may still be the copies from another source.
 
 </details>
@@ -290,7 +296,7 @@ The skills are plain `SKILL.md` folders, so any agent the `skills` CLI supports 
 bash tests/run.sh
 ```
 
-This runs every `tests/*.test.sh`, then shellcheck over the scripts. [CI](https://github.com/vgozalov/skills/actions/workflows/test.yml) runs it on Linux with bash 5 and on macOS with `/bin/bash` 3.2, the version every script has to support.
+This runs every `tests/*.test.sh`, then shellcheck over the scripts. [CI](https://github.com/vgozalov/maestro/actions/workflows/test.yml) runs it on Linux with bash 5 and on macOS with `/bin/bash` 3.2, the version every script has to support.
 
 The art (the banner, the skill emblems and the two diagrams) is drawn by [`assets/generate.py`](./assets/generate.py). It needs `fonttools`, downloads its three typefaces once into `assets/.fonts/` (pinned and checked against a SHA-256), and turns all text into outlines so the SVGs look the same everywhere:
 

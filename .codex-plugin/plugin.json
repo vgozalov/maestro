@@ -1,0 +1,32 @@
+{
+  "name": "maestro",
+  "version": "1.1.0",
+  "description": "Run coding agents in parallel without collisions: plans that say who owns which file, parallel builds with reviews, and chief, an orchestrator that routes work across Claude and Codex.",
+  "author": {
+    "name": "Vagif Gozal",
+    "url": "https://github.com/vgozalov"
+  },
+  "homepage": "https://github.com/vgozalov/maestro",
+  "repository": "https://github.com/vgozalov/maestro",
+  "license": "MIT",
+  "keywords": ["orchestration", "parallel-agents", "subagents", "claude", "planning", "code-review", "tdd", "worktrees"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Maestro",
+    "shortDescription": "Run coding agents in parallel without collisions",
+    "longDescription": "Plans whose tasks each own their files, builds that run them in parallel waves with a review per task, briefs for ad-hoc parallel work, and chief: an orchestrator that delivers a task through Claude and Codex agents, balances both accounts, and reports the cost. Also ships the disciplines the build hands off to: worktrees, test-first, root-cause debugging, verification and code review.",
+    "developerName": "Vagif Gozal",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/vgozalov/maestro",
+    "defaultPrompt": [
+      "Use chief to deliver this feature with a team of agents.",
+      "Write a parallel plan for this spec.",
+      "Wrap up this session."
+    ],
+    "brandColor": "#B88A34",
+    "composerIcon": "./assets/marker-chief.svg",
+    "logo": "./assets/marker-chief.svg",
+    "screenshots": []
+  }
+}
