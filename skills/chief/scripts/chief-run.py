@@ -4,28 +4,41 @@
   chief-run.py start [--title T] [--file F | --issue REF]   task text on stdin otherwise
   chief-run.py phase <run> <phase> [--plan P] [--workspace W]
   chief-run.py summary <run>                                 cost table for the report
-  chief-run.py board                                         the dashboard's data, as JSON
-  chief-run.py serve [--port 8765]                           the dashboard, on 127.0.0.1
+  chief-run.py register                                      list this checkout's existing runs
+  chief-run.py archive <run>... [--done] [--restore]         hide runs from the dashboard, or bring them back
+  chief-run.py board [--days 14]                             the dashboard's data, as JSON
+  chief-run.py dashboard                                     start the shared dashboard or join it
+  chief-run.py serve [--port 8765] [--days 14]               the dashboard in the foreground
 
-Runs live in <repo>/.chief/runs/<id>/, which git ignores. This script is the only writer of
-run.json. Agents are never registered by hand: Claude subagents are found in Claude Code's
+Runs live in <repo>/.chief/runs/<id>/, which git ignores. Every run also leaves a pointer in
+~/.chief/runs/ (CHIEF_HOME overrides ~/.chief), so one dashboard shows the runs of every repo
+and worktree on this machine; `serve` started a second time finds the first server and exits.
+`start` and `phase` start that
+dashboard in the background when none answers, and replace one older than this script.
+This script is the only writer of run.json. Agents are never registered by hand: Claude subagents are found in Claude Code's
 transcripts and Codex jobs in the records run-codex-job.py writes, both by the brief's first
 line, `Run: <run dir>   Task: <id>   Role: <role>`. Costs are API-equivalent estimates from
 model-routing's prices.json, kept per provider.
 """
 import argparse
+import errno
+import hashlib
 import glob
 import http.server
 import importlib.util
 import json
 import os
 import re
+import signal
+import socketserver
 import subprocess
 import sys
+import socket
 import tempfile
 import threading
 import time
 import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,11 +49,20 @@ GIT_CHECK_PATH = SKILLS_ROOT / "model-routing" / "scripts" / "git-check.py"
 USAGE_SCRIPT = SKILLS_ROOT / "model-routing" / "scripts" / "check-account-usage.py"
 USAGE_CACHE = os.path.join(tempfile.gettempdir(), "model-routing-usage.json")
 DASHBOARD = SKILL_DIR / "dashboard.html"
+ROBOTS = SKILL_DIR / "robots.svg"  # drawn by assets/generate.py, the same robots as the README banner
+FONTS = {name: SKILL_DIR / "fonts" / name for name in ("instrument-serif.woff2", "instrument-sans.woff2", "ibm-plex-mono.woff2")}
 
 PHASES = ["intake", "research", "plan", "plan-review", "approval", "implement", "review", "report", "paused", "done"]
 RUN_TAG = re.compile(r"Run:\s*(\S+)(?:\s+Task:\s*(\S+))?(?:\s+Role:\s*(\S+))?")
-RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 STALE_SECONDS = 15 * 60
+QUIET_SECONDS = 2 * 3600  # an unfinished run with no agent working and no phase change for this long has gone quiet
+BUCKET_SECONDS = 600  # spend is kept in 10-minute buckets for the sparkline and the burn rate
+VERDICT = re.compile(r"^\W*(?:status\W*)?(DONE_WITH_CONCERNS|DONE|BLOCKED|FAILED|NEEDS_CONTEXT|APPROVED|CHANGES(?:_REQUESTED)?)\b", re.I)
+DEFAULT_DAYS = 14
+DASHBOARD_APP = "chief-dashboard"
+DASHBOARD_VERSION = 3  # a running dashboard older than this is replaced by the next run
+DEFAULT_PORT = int(os.environ.get("CHIEF_DASHBOARD_PORT") or 8765)
+AUTO_IDLE_HOURS = 6  # a dashboard the chief started exits after this long with no page open
 PROVIDERS = ("claude", "chatgpt")
 
 
@@ -62,6 +84,64 @@ def parse_time(value):
 
 def runs_root(repo):
     return os.path.join(repo, ".chief", "runs")
+
+
+def chief_home():
+    return os.environ.get("CHIEF_HOME") or os.path.join(os.path.expanduser("~"), ".chief")
+
+
+def registry_dir():
+    """Pointers to every run on this machine, whichever repo or worktree holds it."""
+    return os.path.join(chief_home(), "runs")
+
+
+def repo_hash(repo):
+    return hashlib.sha1(os.path.realpath(repo).encode("utf-8")).hexdigest()[:8]
+
+
+def run_key(repo, run_id):
+    """Unique across repos: two checkouts can start runs with the same id in the same minute."""
+    return f"{run_id}@{repo_hash(repo)}"
+
+
+def register_run(run_dir, repo):
+    """Leave a pointer to the run where the shared dashboard finds it. Idempotent."""
+    run_dir, repo = os.path.realpath(run_dir), os.path.realpath(repo)
+    run_id = os.path.basename(run_dir)
+    os.makedirs(registry_dir(), exist_ok=True)
+    path = pointer_path(repo, run_id)
+    current = read_json(path) or {}
+    wanted = {**current, "id": run_id, "dir": run_dir, "repo": repo}  # keeps archive state
+    if current != wanted:
+        write_json(path, wanted)
+    return path
+
+
+def pointer_path(repo, run_id):
+    return os.path.join(registry_dir(), f"{repo_hash(repo)}--{run_id}.json")
+
+
+def set_archived(run, archived, totals=None):
+    """Archive a run (hide it from the dashboard, keeping its totals for the all-runs spend) or restore it."""
+    path = register_run(run["dir"], run["repo"])
+    pointer = read_json(path) or {}
+    if archived:
+        pointer.update(archived=now_iso(), totals=totals)
+    else:
+        pointer.pop("archived", None)
+        pointer.pop("totals", None)
+    write_json(path, pointer)
+    return pointer
+
+
+def register_checkout(repo):
+    """Register every run already in this checkout, for runs started before the registry."""
+    count = 0
+    for run_dir in glob.glob(os.path.join(runs_root(repo), "*")):
+        if os.path.isfile(os.path.join(run_dir, "run.json")):
+            register_run(run_dir, repo)
+            count += 1
+    return count
 
 
 def write_json(path, data):
@@ -120,6 +200,10 @@ def start_run(repo, text, title=None, source="chat", now=None):
         "phase": "intake", "plan": None, "workspace": None,
         "phases": [{"phase": "intake", "at": started, "usage": usage_snapshot()}],
     })
+    try:
+        register_run(run_dir, repo)
+    except OSError as error:  # the run still works; only the shared dashboard misses it
+        print(f"chief-run: could not register the run in {registry_dir()}: {error}", file=sys.stderr)
     return run_dir
 
 
@@ -234,6 +318,7 @@ def price_codex(model, usage, prices):
 # ---- Claude agents, from Claude Code's transcripts ----------------------------------------
 
 _TRANSCRIPTS = {}
+_SESSIONS = {}
 
 
 def prompt_text(entry):
@@ -243,9 +328,42 @@ def prompt_text(entry):
     return " ".join(block.get("text", "") for block in content or [] if isinstance(block, dict))
 
 
+def short_path(path):
+    parts = [part for part in str(path).split("/") if part]
+    return "/".join(parts[-2:]) if parts else str(path)
+
+
+def describe_tool(name, args):
+    """One line for a tool call, as the dashboard's activity feed shows it."""
+    args = args if isinstance(args, dict) else {}
+    if name == "Bash":
+        return "Bash " + (args.get("description") or str(args.get("command") or "")).strip().splitlines()[0][:90] if (args.get("description") or args.get("command")) else "Bash"
+    if name in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit"):
+        return f"{name} {short_path(args.get('file_path') or args.get('notebook_path') or '')}".strip()
+    if name == "Grep":
+        return f'rg "{str(args.get("pattern") or "")[:60]}"'
+    if name == "Glob":
+        return f"Glob {args.get('pattern') or ''}".strip()
+    if name in ("Agent", "Task"):
+        return f"Agent {args.get('description') or ''}".strip()
+    if name == "WebFetch":
+        return f"WebFetch {urllib.parse.urlparse(str(args.get('url') or '')).netloc}".strip()
+    if name == "WebSearch":
+        return f"WebSearch {str(args.get('query') or '')[:60]}".strip()
+    if name == "TodoWrite":
+        return "Update the todo list"
+    return name
+
+
+def verdict_of(report):
+    match = VERDICT.match(report or "")
+    return match.group(1).upper() if match else None
+
+
 def parse_messages(lines, prices, start=None, end=None, sidechain=None):
-    """Usage, cost and the last reply over the assistant messages in a transcript."""
+    """Usage, cost, recent tool calls, spend per 10 minutes and the last reply over a transcript's assistant messages."""
     messages, last_text, last_entry, first_at, last_at = {}, "", None, None, None
+    acts, stamps = [], {}
     for line in lines:
         try:
             entry = json.loads(line)
@@ -265,12 +383,16 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
             continue
         if message.get("usage") and message.get("id"):
             messages[message["id"]] = message
+            stamps[message["id"]] = at
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                acts.append([entry.get("timestamp"), describe_tool(block.get("name"), block.get("input"))])
         text = prompt_text(entry).strip()
         if text:
             last_text = text
     tokens = {"input": 0, "output": 0, "cache_write_5m": 0, "cache_write_1h": 0, "cache_read": 0}
-    cost, unpriced, model = 0.0, False, None
-    for message in messages.values():
+    cost, unpriced, model, spend = 0.0, False, None, {}
+    for message_id, message in messages.items():
         usage = message["usage"]
         split = usage.get("cache_creation") or {}
         write_1h = split.get("ephemeral_1h_input_tokens", 0) or 0
@@ -285,10 +407,14 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
             unpriced = True
         else:
             cost += price
+            if stamps.get(message_id):
+                bucket = int(stamps[message_id] // BUCKET_SECONDS)
+                spend[bucket] = spend.get(bucket, 0.0) + price
     done = bool(last_entry and last_entry.get("type") == "assistant"
                 and (last_entry.get("message") or {}).get("stop_reason") == "end_turn")
     return {"tokens": tokens, "cost_usd": None if unpriced else round(cost, 6), "model": model,
-            "report": last_text[-6000:], "started": first_at, "ended": last_at if done else None, "done": done}
+            "report": last_text[-6000:], "started": first_at, "ended": last_at if done else None, "done": done,
+            "acts": [act for act in reversed(acts[-6:])], "spend": spend}
 
 
 def parse_subagent(path, prices):
@@ -339,18 +465,35 @@ def claude_agents(config_dir, runs, prices):
         for run in runs:
             if same_run(parsed["tag_run"], run["dir"], run["id"]):
                 status = "done" if parsed["done"] else ("stopped" if time.time() - mtime > STALE_SECONDS else "running")
+                verdict = verdict_of(parsed["report"]) if parsed["done"] else None
+                if verdict in ("BLOCKED", "NEEDS_CONTEXT"):
+                    status = "blocked"
+                elif verdict == "FAILED":
+                    status = "failed"
                 found[run["id"]].append({
                     "id": "claude-" + os.path.basename(path)[len("agent-"): -len(".jsonl")], "provider": "claude",
                     "model": parsed["model"], "task": parsed["task"], "role": parsed["role"],
                     "description": parsed["description"], "status": status, "started": parsed["started"],
                     "ended": parsed["ended"], "tokens": parsed["tokens"], "cost_usd": parsed["cost_usd"],
-                    "report": parsed["report"]})
+                    "report": parsed["report"], "verdict": verdict, "acts": parsed["acts"], "active": mtime,
+                    "_spend": parsed["spend"]})
                 break
     for run in runs:
         chief = chief_session(config_dir, run, prices, since)
         if chief:
             found[run["id"]].append(chief)
     return found
+
+
+def session_text(path):
+    """A main session's transcript, or None when it never started a run; remembered per version."""
+    stat = os.stat(path)
+    key = (path, stat.st_mtime, stat.st_size)
+    if key not in _SESSIONS:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        _SESSIONS[key] = text if "chief-run.py start" in text else None
+    return _SESSIONS[key]
 
 
 def chief_session(config_dir, run, prices, since):
@@ -361,17 +504,19 @@ def chief_session(config_dir, run, prices, since):
         try:
             if os.path.getmtime(path) < since:
                 continue
-            with open(path, encoding="utf-8", errors="replace") as handle:
-                text = handle.read()
+            text = session_text(path)
         except OSError:
             continue
-        if f"chief-run.py start" not in text or run["id"] not in text:
+        if not text or run["id"] not in text:
             continue
         parsed = parse_messages(text.splitlines(), prices, start=start - 120, end=end, sidechain=False)
+        mtime = os.path.getmtime(path)
+        status = "done" if run.get("ended") else ("running" if time.time() - mtime < STALE_SECONDS else "stopped")
         return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
-                "description": "the chief session", "status": "done" if run.get("ended") else "running",
+                "description": "the chief session", "status": status,
                 "started": run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
-                "cost_usd": parsed["cost_usd"], "report": ""}
+                "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
+                "active": mtime, "_spend": parsed["spend"]}
     return None
 
 
@@ -386,6 +531,47 @@ def process_alive(pid):
         return False
 
 
+def unwrap_shell(command):
+    """`/bin/zsh -lc "npm test"` -> `npm test`."""
+    match = re.match(r'^\S*sh\s+-l?c\s+(["\'])(.*)\1\s*$', command or "", re.S)
+    return match.group(2) if match else (command or "")
+
+
+def codex_acts(log_path, limit=6):
+    """The latest tool calls of a Codex job, newest first, from its events.jsonl. Only the newest carries a time."""
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as handle:
+            lines = handle.readlines()[-400:]
+        mtime = os.path.getmtime(log_path)
+    except (OSError, TypeError):
+        return [], None
+    acts, seen = [], set()
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item") or {}
+        if event.get("type") not in ("item.started", "item.completed") or item.get("id") in seen:
+            continue
+        kind, text = item.get("type"), None
+        if kind == "command_execution":
+            text = "Bash " + unwrap_shell(item.get("command")).strip().splitlines()[0][:90] if item.get("command") else "Bash"
+        elif kind == "file_change":
+            text = "Edit " + ", ".join(short_path(change.get("path", "")) for change in (item.get("changes") or [])[:2])
+        elif kind == "mcp_tool_call":
+            text = f"{item.get('server', 'mcp')}.{item.get('tool', '')}"
+        elif kind == "web_search":
+            text = f"WebSearch {str(item.get('query') or '')[:60]}"
+        if text:
+            seen.add(item.get("id"))
+            acts.append([None, text])
+    acts = list(reversed(acts[-limit:]))
+    if acts:
+        acts[0][0] = datetime.fromtimestamp(mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return acts, mtime
+
+
 def codex_agents(run_dir, prices):
     agents = []
     for path in sorted(glob.glob(os.path.join(run_dir, "agents", "codex-*.json"))):
@@ -397,13 +583,23 @@ def codex_agents(run_dir, prices):
             status = "stopped"
         usage = record.get("usage") or {}
         report = record.get("last_message") or ""
+        verdict = verdict_of(report) if status == "done" else None
+        if verdict in ("BLOCKED", "NEEDS_CONTEXT"):
+            status = "blocked"
+        elif verdict == "FAILED" or status == "failed":
+            status = "failed"
+        acts, active = codex_acts(record.get("log"))
+        cost = price_codex(record.get("model"), record.get("usage"), prices)
+        when = parse_time(record.get("ended") or record.get("started"))
+        spend = {int(when // BUCKET_SECONDS): cost} if cost and when else {}
         agents.append({
             "id": os.path.basename(path)[: -len(".json")], "provider": "chatgpt", "model": record.get("model"),
             "effort": record.get("effort"), "task": record.get("task") or "-", "role": record.get("role") or "agent",
             "description": record.get("label") or "", "status": status, "started": record.get("started"),
             "ended": record.get("ended"), "thread_id": record.get("thread_id"), "resumed": bool(record.get("resumed")),
             "tokens": {key: usage.get(key, 0) or 0 for key in ("input", "cached", "output", "reasoning")},
-            "cost_usd": price_codex(record.get("model"), record.get("usage"), prices), "report": report[-6000:]})
+            "cost_usd": cost, "report": report[-6000:], "verdict": verdict, "acts": acts,
+            "active": active or parse_time(record.get("ended") or record.get("started")), "_spend": spend})
     latest = {}
     for agent in agents:
         if agent["thread_id"]:
@@ -414,6 +610,128 @@ def codex_agents(run_dir, prices):
         if agent["thread_id"] and latest[agent["thread_id"]][1] != agent["id"]:
             agent["superseded"] = True  # a later resume of the same thread reports its whole usage
     return agents
+
+
+# ---- plan tasks, from the plan's Owns lines, the build ledger and the live agents -------------
+
+
+TASK_HEAD = re.compile(r"^###\s+Task\s+(\d+[a-z]?)\s*:\s*(.+?)\s*$")
+WAVE_LINE = re.compile(r"^\s*(Wave\s+\d+|Integration|Final)\s*(?:\([^)]*\))?\s*:\s*Tasks?\s+([0-9a-z,\s]+)", re.I)
+LEDGER_LINE = re.compile(r"^Task\s+(\d+[a-z]?)\s*:\s*(.+)$")
+ROOTS = {"src", "lib", "app"}
+GROUPS = {"apps", "packages", "libs", "services", "modules"}
+TEST_DIRS = {"test", "tests", "__tests__", "spec", "specs", "e2e", "cypress", "playwright"}
+
+
+def area_of(path):
+    """The part of the codebase a path belongs to: tests, or the first meaningful folder."""
+    parts = [part for part in path.strip("`").split("/") if part and "*" not in part]
+    if any(part in TEST_DIRS for part in parts) or re.search(r"\.(test|spec)\.", path):
+        return "tests"
+    while parts and parts[0] in ROOTS and len(parts) > 1:
+        parts = parts[1:]
+    if parts and parts[0] in GROUPS and len(parts) > 1:
+        parts = parts[1:]
+    if len(parts) <= 1:
+        return "root"
+    return parts[0]
+
+
+def parse_plan(text):
+    """[{id, name, owns, area, wave}] from a parallel-plans plan; empty when the plan has no task headings."""
+    tasks, current, waves = [], None, {}
+    for line in text.splitlines():
+        head = TASK_HEAD.match(line)
+        if head:
+            current = {"id": head.group(1), "name": head.group(2)[:90], "owns": [], "area": None, "wave": None}
+            tasks.append(current)
+            continue
+        wave = WAVE_LINE.match(line)
+        if wave:
+            for task_id in re.findall(r"\d+[a-z]?", wave.group(2)):
+                waves.setdefault(task_id, wave.group(1).strip().capitalize() if not wave.group(1).lower().startswith("wave") else wave.group(1).strip())
+        if current and line.strip().startswith("**Owns:**"):
+            current["owns"] = re.findall(r"`([^`]+)`", line)
+    for task in tasks:
+        areas = [area_of(path) for path in task["owns"]]
+        code = [area for area in areas if area != "tests"] or areas  # a task's code names it; tests alone make it "tests"
+        task["area"] = max(sorted(set(code)), key=code.count) if code else None
+        task["wave"] = waves.get(task["id"])
+    return tasks
+
+
+def ledger_states(text):
+    """{task id: (state, fix round)} from a build ledger's `Task N: ...` lines; the last line about a task wins."""
+    states = {}
+    for line in text.splitlines():
+        match = LEDGER_LINE.match(line.strip())
+        if not match:
+            continue
+        task_id, rest = match.group(1), match.group(2).lower()
+        previous_round = states.get(task_id, (None, 0))[1]
+        if rest.startswith("complete"):
+            states[task_id] = ("done", previous_round)
+        elif "blocked" in rest or "parked" in rest:
+            states[task_id] = ("blocked", previous_round)
+        elif rest.startswith("fix round"):
+            number = re.match(r"fix round\s+(\d+)", rest)
+            states[task_id] = ("fix", int(number.group(1)) if number else previous_round + 1)
+        elif rest.startswith("review") or "review dispatched" in rest:
+            states[task_id] = ("review", previous_round)
+        elif rest.startswith(("dispatched", "implemented")):
+            states[task_id] = ("build", previous_round)
+    return states
+
+
+ROLE_KINDS = ("chief", "research", "plan", "implement", "review", "fix", "git")
+
+
+def role_kind(role):
+    """The section a brief's role belongs to: `implementer` -> implement, `plan-review` -> review, `fixer` -> fix."""
+    role = (role or "").lower()
+    if "review" in role:
+        return "review"
+    for kind in ROLE_KINDS:
+        if role.startswith(kind[:4]):
+            return kind
+    if role in ("steward", "merge", "commit", "push"):
+        return "git"
+    return "other"
+
+
+def run_tasks(run, agents):
+    """The run's plan tasks with a status each: a live agent first, then the ledger, else waiting."""
+    plan = run.get("plan")
+    if not plan:
+        return []
+    try:
+        with open(os.path.join(run["repo"], plan), encoding="utf-8", errors="replace") as handle:
+            tasks = parse_plan(handle.read())
+    except OSError:
+        return []
+    ledger = {}
+    if run.get("workspace"):
+        try:
+            with open(os.path.join(run["repo"], run["workspace"], "progress.md"), encoding="utf-8", errors="replace") as handle:
+                ledger = ledger_states(handle.read())
+        except OSError:
+            pass
+    live = {"implement": "build", "review": "review", "fix": "fix"}
+    for agent in agents:
+        agent.setdefault("kind", role_kind(agent["role"]))
+    for task in tasks:
+        state, fix_round = ledger.get(task["id"], ("queued", 0))
+        mine = [agent for agent in agents if agent["task"] == task["id"]]
+        for agent in mine:
+            if agent["status"] == "running" and agent["kind"] in live:
+                state = live[agent["kind"]]
+            elif agent["status"] in ("blocked", "failed") and state != "done":
+                state = "blocked"
+        fixes = [agent for agent in mine if agent["kind"] == "fix"]
+        task.update(status=state, round=max(fix_round, len(fixes)),
+                    who=next((agent["model"] for agent in reversed(mine) if agent["kind"] in ("implement", "fix")), None))
+        task.pop("owns")
+    return tasks
 
 
 # ---- the board ----------------------------------------------------------------------------
@@ -445,12 +763,45 @@ def totals_for(agents):
     return totals
 
 
-def list_runs(repo):
-    runs = []
-    for run_dir in sorted(glob.glob(os.path.join(runs_root(repo), "*")), reverse=True):
-        state = read_json(os.path.join(run_dir, "run.json"))
-        if isinstance(state, dict) and state.get("id"):
-            runs.append({**state, "dir": run_dir})
+def read_run(run_dir, repo):
+    state = read_json(os.path.join(run_dir, "run.json"))
+    if not isinstance(state, dict) or not state.get("id"):
+        return None
+    repo = os.path.realpath(repo or state.get("repo") or os.path.dirname(os.path.dirname(os.path.dirname(run_dir))))
+    return {**state, "dir": run_dir, "repo": repo, "key": run_key(repo, state["id"])}
+
+
+def list_runs(repo=None, days=None):
+    """Every registered run on this machine plus the given checkout's own, newest first.
+
+    Pointers whose run folder is gone (a removed worktree) are dropped. With days, runs that
+    ended longer ago are left out; running and paused runs always stay. Archived runs are
+    included and marked; build_board decides what to show."""
+    found = {}
+    for path in glob.glob(os.path.join(registry_dir(), "*.json")):
+        pointer = read_json(path)
+        run_dir = isinstance(pointer, dict) and pointer.get("dir")
+        run = read_run(run_dir, pointer.get("repo")) if run_dir else None
+        if run is None:
+            if not run_dir or not os.path.exists(run_dir):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            continue
+        run["archived"] = pointer.get("archived")
+        run["archived_totals"] = pointer.get("totals")
+        found[os.path.realpath(run_dir)] = run
+    if repo:
+        for run_dir in glob.glob(os.path.join(runs_root(repo), "*")):
+            if os.path.realpath(run_dir) not in found:
+                run = read_run(run_dir, repo)
+                if run:
+                    found[os.path.realpath(run_dir)] = run
+    cutoff = time.time() - days * 86400 if days else None
+    runs = [run for run in found.values()
+            if not cutoff or not run.get("ended") or (parse_time(run["ended"]) or 0) >= cutoff]
+    runs.sort(key=lambda run: run.get("started") or "", reverse=True)
     return runs
 
 
@@ -469,21 +820,86 @@ def default_config_dir():
     return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
 
 
-def build_board(repo, config_dir=None, prices=None, with_git=True):
+def build_cards(runs, config_dir=None, prices=None):
     prices = load_prices() if prices is None else prices
-    runs = list_runs(repo)
     claude = claude_agents(config_dir or default_config_dir(), runs, prices)
     cards = []
     for run in runs:
         agents = claude[run["id"]] + codex_agents(run["dir"], prices)
         agents.sort(key=lambda agent: agent.get("started") or "")
-        card = {key: run.get(key) for key in ("id", "title", "source", "phase", "phases", "started", "ended", "plan", "workspace", "dir")}
-        card.update(agents=agents, totals=totals_for(agents))
+        for agent in agents:
+            agent["kind"] = role_kind(agent["role"])
+        card = {key: run.get(key) for key in ("key", "id", "title", "source", "phase", "phases", "started", "ended",
+                                              "plan", "workspace", "dir", "repo", "archived")}
+        last = max([parse_time(entry.get("at")) or 0 for entry in run.get("phases") or []]
+                   + [agent.get("active") or 0 for agent in agents] + [parse_time(run.get("started")) or 0])
+        working = any(agent["status"] == "running" and agent["kind"] != "chief" for agent in agents)
+        open_run = run.get("phase") not in ("done", "paused")
+        card.update(agents=agents, totals=totals_for(agents), tasks=run_tasks(run, agents),
+                    last_activity=datetime.fromtimestamp(last, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if last else None,
+                    quiet=bool(open_run and not working and last and time.time() - last > QUIET_SECONDS))
         cards.append(card)
-    every = [agent for card in cards for agent in card["agents"]]
-    return {"generated": now_iso(), "repo": repo, "runs": cards, "totals": totals_for(every),
-            "accounts": read_usage_cache(), "git": git_state(repo) if with_git else None,
+    return cards
+
+
+def spend_summary(agents, archived_total, now=None):
+    """All-runs spend, the last 24 hours in 10-minute buckets, and the burn rate over the last hour."""
+    now = now or time.time()
+    current = int(now // BUCKET_SECONDS)
+    buckets = [0.0] * 144
+    for agent in agents:
+        if agent.get("superseded"):
+            continue
+        for bucket, cost in (agent.get("_spend") or {}).items():
+            age = current - int(bucket)
+            if 0 <= age < 144:
+                buckets[143 - age] += cost
+    every = totals_for(agents)["total_cost_usd"]
+    return {"all_runs": round(every + archived_total, 4), "last_24h": round(sum(buckets), 4),
+            "burn_per_hour": round(sum(buckets[-6:]), 4), "buckets": [round(value, 4) for value in buckets]}
+
+
+def is_archived(run, days):
+    if run.get("archived"):
+        return True
+    ended = parse_time(run.get("ended"))
+    return bool(days and ended and time.time() - ended > days * 86400)
+
+
+def build_board(repo=None, config_dir=None, prices=None, with_git=True, days=None, git=None, archived=False):
+    """Every run on this machine; archived=True lists the archived ones instead. git(repo) supplies each
+    checkout's git state; with_git=False skips it. Runs that ended more than `days` ago count as archived."""
+    every_run = list_runs(repo)
+    shown = [run for run in every_run if is_archived(run, days) == archived]
+    stored = [run for run in every_run if run.get("archived") and run.get("archived_totals")]
+    cards = build_cards(shown, config_dir, prices)
+    agents = [agent for card in cards for agent in card["agents"]]
+    archived_total = 0.0 if archived else sum((run["archived_totals"] or {}).get("total_cost_usd") or 0 for run in stored)
+    spend = spend_summary(agents, archived_total)
+    for agent in agents:
+        agent.pop("_spend", None)
+    repos = []
+    for path in dict.fromkeys(card["repo"] for card in cards):
+        state = (git or git_state)(path) if with_git else None
+        repos.append({"repo": path, "name": os.path.basename(path), "git": state})
+    return {"generated": now_iso(), "repo": repo, "repos": repos, "runs": cards, "totals": totals_for(agents),
+            "spend": spend, "accounts": read_usage_cache(), "days": days, "view": "archived" if archived else "active",
+            "archived_count": sum(1 for run in every_run if is_archived(run, days)),
             "prices_note": "API-equivalent estimates from model-routing/prices.json; on a subscription the window use is what limits you"}
+
+
+def archive_runs(repo, keys, archived=True, config_dir=None, prices=None):
+    """Archive or restore runs by key or id. Returns the keys changed."""
+    runs = list_runs(repo)
+    changed = []
+    for key in keys:
+        run = find_run(runs, key)
+        if not run:
+            raise ValueError(f"no run {key}")
+        totals = build_cards([run], config_dir, prices)[0]["totals"] if archived else None
+        set_archived(run, archived, totals)
+        changed.append(run["key"])
+    return changed
 
 
 def money(value):
@@ -493,11 +909,12 @@ def money(value):
 
 
 def summary_markdown(repo, run_dir, config_dir=None, prices=None):
-    board = build_board(repo, config_dir=config_dir, prices=prices, with_git=False)
-    run_id = os.path.basename(os.path.normpath(run_dir))
-    card = next((item for item in board["runs"] if item["id"] == run_id), None)
-    if card is None:
-        raise ValueError(f"no run {run_id}")
+    run = read_run(os.path.normpath(run_dir), repo)
+    if run is None:
+        raise ValueError(f"no run {os.path.basename(os.path.normpath(run_dir))}")
+    card = build_cards([run], config_dir, prices)[0]
+    for agent in card["agents"]:
+        agent.pop("_spend", None)
     lines = [f"Run {card['id']}: {card['title']}", "",
              "| provider | model | role | task | status | tokens | API-eq $ |", "| --- | --- | --- | --- | --- | --- | --- |"]
     for agent in card["agents"]:
@@ -527,13 +944,22 @@ def summary_markdown(repo, run_dir, config_dir=None, prices=None):
 # ---- files the dashboard may open ----------------------------------------------------------
 
 
-def resolve_file(repo, run_id, name):
-    if not RUN_ID.match(run_id or "") or ".." in run_id:
+def find_run(runs, key):
+    """The run a dashboard link names: its key, or a bare run id when only one run has it."""
+    if not key:
         return None
-    run_dir = os.path.join(runs_root(repo), run_id)
-    state = read_json(os.path.join(run_dir, "run.json"))
-    if not isinstance(state, dict):
+    exact = [run for run in runs if run["key"] == key]
+    if exact:
+        return exact[0]
+    by_id = [run for run in runs if run["id"] == key]
+    return by_id[0] if len(by_id) == 1 else None
+
+
+def resolve_file(run, name):
+    """A file the dashboard may show for this run, inside the run's own checkout, or None."""
+    if not run:
         return None
+    repo, run_dir, state = run["repo"], run["dir"], run
     fixed = {"task": os.path.join(run_dir, "task.md"), "run": os.path.join(run_dir, "run.json")}
     if name in fixed:
         return fixed[name]
@@ -566,10 +992,133 @@ def refresh_usage_forever(minutes):
         time.sleep(60)
 
 
-def serve(repo, port, refresh_minutes=5):
-    git_cache = {"at": 0, "value": None}
-    if refresh_minutes > 0:
-        threading.Thread(target=refresh_usage_forever, args=(refresh_minutes,), daemon=True).start()
+class DashboardServer(http.server.ThreadingHTTPServer):
+    """HTTPServer without the reverse DNS lookup of its own address (socket.getfqdn) on bind, which can stall
+    for many seconds on macOS; the dashboard only ever listens on 127.0.0.1."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+def dashboard_page():
+    page = DASHBOARD.read_text(encoding="utf-8")
+    try:
+        robots = ROBOTS.read_text(encoding="utf-8")
+    except OSError:
+        robots = ""  # the board still works; the stage draws no figures
+    return page.replace("<!--ROBOTS-->", robots, 1)
+
+
+def dashboard_health(port, timeout=2):
+    """The /health reply of a chief dashboard on this port, or None."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=timeout) as response:
+            health = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    return health if isinstance(health, dict) and health.get("app") == DASHBOARD_APP else None
+
+
+def dashboard_running(port):
+    """True when a chief dashboard at least as new as this script answers on this port."""
+    health = dashboard_health(port)
+    return bool(health) and health.get("version", 0) >= DASHBOARD_VERSION
+
+
+def port_free(port):
+    """True when nothing listens on the port. A connect probe: on macOS a test bind can succeed beside a listener."""
+    with socket.socket() as probe:
+        probe.settimeout(1)
+        return probe.connect_ex(("127.0.0.1", port)) != 0
+
+
+def listener_pids(port):
+    """Processes listening on the port, from lsof; empty when lsof is missing."""
+    try:
+        completed = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+                                   capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(pid) for pid in completed.stdout.split() if pid.isdigit()]
+
+
+def command_line(pid):
+    completed = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True)
+    return completed.stdout.strip()
+
+
+def stop_old_dashboard(port, health):
+    """Stop an older chief dashboard holding the port. Anything that is not chief-run.py serve is left alone."""
+    pids = [health["pid"]] if health and health.get("pid") else listener_pids(port)
+    targets = [pid for pid in pids if health or ("chief-run.py" in command_line(pid) and " serve" in command_line(pid))]
+    if not targets:
+        return False
+    for pid in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if port_free(port):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def dashboard_log():
+    return os.path.join(chief_home(), "dashboard.log")
+
+
+def ensure_dashboard(port=None, wait=8):
+    """Make sure the shared dashboard answers on the port: join it, replace an older one, or start one.
+
+    Runs register through their pointer files, so a running dashboard needs no call to pick them
+    up. Returns {"url", "server": running|started|replaced|failed, "detail"?}; never raises."""
+    port = port or DEFAULT_PORT
+    url = f"http://127.0.0.1:{port}/"
+    if os.environ.get("CHIEF_DASHBOARD", "").lower() in ("off", "0", "no"):
+        return {"url": url, "server": "off"}
+    try:
+        health = dashboard_health(port)
+        if health and health.get("version", 0) >= DASHBOARD_VERSION:
+            return {"url": url, "server": "running"}
+        replaced = False
+        if not port_free(port):
+            if not stop_old_dashboard(port, health):
+                return {"url": url, "server": "failed",
+                        "detail": f"port {port} is held by something other than a chief dashboard; set CHIEF_DASHBOARD_PORT to another port"}
+            replaced = True
+        os.makedirs(chief_home(), exist_ok=True)
+        with open(dashboard_log(), "a", encoding="utf-8") as log:
+            subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "serve", "--port", str(port),
+                              "--idle-hours", str(AUTO_IDLE_HOURS)],
+                             cwd=chief_home(), stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                             start_new_session=True)  # its own session: it outlives the chief's shell
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            if dashboard_running(port):
+                return {"url": url, "server": "replaced" if replaced else "started"}
+            time.sleep(0.2)
+        return {"url": url, "server": "failed", "detail": f"the dashboard did not answer; see {dashboard_log()}"}
+    except Exception as error:  # the run goes on without a dashboard
+        return {"url": url, "server": "failed", "detail": str(error)}
+
+
+def serve(repo, port, refresh_minutes=5, days=DEFAULT_DAYS, idle_hours=0):
+    url = f"http://127.0.0.1:{port}/"
+    if repo:
+        register_checkout(repo)
+    git_cache = {}
+    last_request = {"at": time.time()}
+
+    def cached_git(path):
+        at, value = git_cache.get(path, (0, None))
+        if time.time() - at > 15:
+            value = git_state(path)
+            git_cache[path] = (time.time(), value)
+        return value
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def send(self, status, body, content_type):
@@ -583,32 +1132,83 @@ def serve(repo, port, refresh_minutes=5):
 
         def do_GET(self):
             url = urllib.parse.urlparse(self.path)
+            if url.path != "/health":
+                last_request["at"] = time.time()
             if url.path in ("/", "/index.html"):
-                return self.send(200, DASHBOARD.read_text(encoding="utf-8"), "text/html; charset=utf-8")
+                return self.send(200, dashboard_page(), "text/html; charset=utf-8")
+            if url.path.startswith("/fonts/") and url.path[len("/fonts/"):] in FONTS:
+                try:
+                    data = FONTS[url.path[len("/fonts/"):]].read_bytes()
+                except OSError:
+                    return self.send(404, "not found", "text/plain; charset=utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "font/woff2")
+                self.send_header("Cache-Control", "max-age=86400")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return None
+            if url.path == "/health":
+                return self.send(200, json.dumps({"app": DASHBOARD_APP, "version": DASHBOARD_VERSION, "pid": os.getpid()}), "application/json")
             if url.path == "/board.json":
-                board = build_board(repo, with_git=False)
-                if time.time() - git_cache["at"] > 15:
-                    git_cache.update(at=time.time(), value=git_state(repo))
-                board["git"] = git_cache["value"]
+                archived = urllib.parse.parse_qs(url.query).get("view") == ["archived"]
+                board = build_board(repo, days=days, git=cached_git, archived=archived)
                 return self.send(200, json.dumps(board), "application/json")
             if url.path == "/file":
                 query = urllib.parse.parse_qs(url.query)
-                path = resolve_file(repo, (query.get("run") or [""])[0], (query.get("name") or [""])[0])
+                run = find_run(list_runs(repo), (query.get("run") or [""])[0])
+                path = resolve_file(run, (query.get("name") or [""])[0])
                 if not path:
                     return self.send(404, "not found", "text/plain; charset=utf-8")
                 with open(path, encoding="utf-8", errors="replace") as handle:
                     return self.send(200, handle.read(), "text/plain; charset=utf-8")
             return self.send(404, "not found", "text/plain; charset=utf-8")
 
+        def do_POST(self):
+            # Only the dashboard page sends this header; a page on another site cannot add it without a
+            # CORS preflight, which this server never answers.
+            url = urllib.parse.urlparse(self.path)
+            if url.path != "/archive" or self.headers.get("X-Chief-Dashboard") != "1":
+                return self.send(403, "forbidden", "text/plain; charset=utf-8")
+            last_request["at"] = time.time()
+            try:
+                length = min(int(self.headers.get("Content-Length") or 0), 65536)
+                body = json.loads(self.rfile.read(length) or b"{}")
+                keys = [str(key) for key in body.get("keys") or []][:200]
+                changed = archive_runs(repo, keys, archived=bool(body.get("archived", True)))
+            except (ValueError, TypeError, AttributeError) as error:
+                return self.send(400, json.dumps({"error": str(error)}), "application/json")
+            return self.send(200, json.dumps({"changed": changed}), "application/json")
+
         def log_message(self, *args):
             pass
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Agent runs dashboard for {repo}: http://127.0.0.1:{port}/  (Ctrl-C to stop)")
+    try:
+        server = DashboardServer(("127.0.0.1", port), Handler)
+    except OSError as error:
+        if error.errno != errno.EADDRINUSE:
+            raise
+        if dashboard_running(port):
+            print(f"Agent runs dashboard already running for every repo: {url}")
+            return
+        raise RuntimeError(f"port {port} is taken by something that is not a current chief dashboard (an older one"
+                           " shows fewer runs): `chief-run.py dashboard` replaces an older one; otherwise pass --port")
+    if refresh_minutes > 0:
+        threading.Thread(target=refresh_usage_forever, args=(refresh_minutes,), daemon=True).start()
+    if idle_hours > 0:
+        def stop_when_idle():
+            while time.time() - last_request["at"] < idle_hours * 3600:
+                time.sleep(min(60, idle_hours * 3600 / 4))
+            server.shutdown()  # the next chief run starts it again
+        threading.Thread(target=stop_when_idle, daemon=True).start()
+    signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
+    print(f"Agent runs dashboard for every repo on this machine: {url}  (Ctrl-C to stop)", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        server.server_close()
 
 
 # ---- command line -------------------------------------------------------------------------
@@ -629,15 +1229,26 @@ def main():
     phase.add_argument("--workspace", help="the plan workspace holding progress.md and handoff.md")
     summary = commands.add_parser("summary", help="the cost table for the report")
     summary.add_argument("run")
-    commands.add_parser("board", help="print the dashboard data")
-    serve_command = commands.add_parser("serve", help="serve the dashboard on 127.0.0.1")
-    serve_command.add_argument("--port", type=int, default=8765)
+    commands.add_parser("register", help="add this checkout's existing runs to the shared dashboard")
+    archive_command = commands.add_parser("archive", help="hide runs from the dashboard, or bring them back")
+    archive_command.add_argument("runs", nargs="*", help="run ids or dashboard keys")
+    archive_command.add_argument("--done", action="store_true", help="every finished run on this machine")
+    archive_command.add_argument("--restore", action="store_true", help="bring the runs back instead")
+    board_command = commands.add_parser("board", help="print the dashboard data")
+    serve_command = commands.add_parser("serve", help="serve the dashboard for every repo on 127.0.0.1")
+    serve_command.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve_command.add_argument("--idle-hours", type=float, default=0,
+                               help="exit after this many hours with no page open; 0 never")
+    commands.add_parser("dashboard", help="start the shared dashboard in the background, or join the running one")
+    for command in (board_command, serve_command):
+        command.add_argument("--days", type=int, default=DEFAULT_DAYS,
+                             help="leave out runs that ended more than this many days ago; 0 keeps all")
     serve_command.add_argument("--refresh-usage", type=int, default=5, metavar="MINUTES",
                                help="refresh both accounts' usage this often for the gauges; 0 turns it off")
     args = parser.parse_args()
 
     repo = git_toplevel()
-    if not repo:
+    if not repo and args.command not in ("board", "serve", "dashboard", "archive"):
         print("chief-run: run it inside the project's git repository", file=sys.stderr)
         return 2
     try:
@@ -650,21 +1261,46 @@ def main():
             else:
                 title, text, origin = None, sys.stdin.read(), "chat"
             run_dir = start_run(repo, text, title=args.title or title, source=origin)
-            print(json.dumps({"run": run_dir, "id": os.path.basename(run_dir),
+            key = run_key(repo, os.path.basename(run_dir))
+            server = ensure_dashboard()
+            print(json.dumps({"run": run_dir, "id": os.path.basename(run_dir), "key": key,
+                              "dashboard": f"{server['url']}?run={urllib.parse.quote(key)}",
+                              "dashboard_server": server["server"], **({"dashboard_detail": server["detail"]} if "detail" in server else {}),
                               "tag": f"Run: {run_dir}   Task: <id>   Role: <role>"}))
         elif args.command in ("phase", "summary"):
             run_dir = resolve_run(repo, args.run)
             if not run_dir:
                 raise ValueError(f"no run {args.run} under {runs_root(repo)}")
             if args.command == "phase":
+                register_run(run_dir, repo)  # a run from before the registry joins the shared dashboard
                 state = set_phase(run_dir, args.phase, plan=args.plan, workspace=args.workspace)
-                print(json.dumps({"id": state["id"], "phase": state["phase"]}))
+                result = {"id": state["id"], "phase": state["phase"]}
+                if args.phase != "done":  # a resumed session, or a dashboard that went idle, comes back
+                    server = ensure_dashboard()
+                    result.update(dashboard=f"{server['url']}?run={urllib.parse.quote(run_key(repo, state['id']))}",
+                                  dashboard_server=server["server"], **({"dashboard_detail": server["detail"]} if "detail" in server else {}))
+                print(json.dumps(result))
             else:
                 print(summary_markdown(repo, run_dir))
+        elif args.command == "archive":
+            keys = list(args.runs)
+            if args.done:
+                keys += [run["key"] for run in list_runs(repo) if run.get("phase") == "done" and not run.get("archived")]
+            if not keys:
+                raise ValueError("name the runs to archive, or pass --done")
+            changed = archive_runs(repo, keys, archived=not args.restore)
+            print(json.dumps({"restored" if args.restore else "archived": changed}))
+        elif args.command == "register":
+            print(json.dumps({"registered": register_checkout(repo), "registry": registry_dir()}))
         elif args.command == "board":
-            print(json.dumps(build_board(repo)))
+            board = build_board(repo, days=args.days or None)
+            print(json.dumps(board))
+        elif args.command == "dashboard":
+            if repo:
+                register_checkout(repo)
+            print(json.dumps(ensure_dashboard()))
         else:
-            serve(repo, args.port, args.refresh_usage)
+            serve(repo, args.port, args.refresh_usage, days=args.days or None, idle_hours=args.idle_hours)
     except (ValueError, RuntimeError, OSError) as error:
         print(f"chief-run: {error}", file=sys.stderr)
         return 1

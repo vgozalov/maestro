@@ -1,0 +1,28 @@
+{
+  "description": "Maestro: during a chief run, add both accounts' usage and the routing pick to the context before every agent spawn and Codex job.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 75,
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/skills/model-routing/scripts/usage-before-spawn.py\" --during-chief-run"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 75,
+            "if": "Bash(*run-codex-job.py*)",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/skills/model-routing/scripts/usage-before-spawn.py\" --during-chief-run"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -836,6 +836,22 @@ def install_flow():
     return svg_doc(W, H, "How installing works", desc, plate(W, H, p, t))
 
 
+def dashboard_robots():
+    """The chief dashboard's figures as SVG symbols: one seated robot per instrument, the conductor and the podium.
+
+    The dashboard (skills/chief/dashboard.html) places them with <use href="#r-cello">, one per live agent; its
+    server inlines this file into the page. Symbols keep the banner's own coordinates, so a robot's lamp sits at (9, -40)."""
+    parts = []
+    for kind in ("violin", "cello", "bass", "trumpet", "clarinet"):
+        svg, _ = robot(0, 0, 1, kind)
+        parts.append('<symbol id="r-%s" viewBox="-80 -150 160 200" overflow="visible">%s</symbol>' % (kind, svg))
+    body, swing = conductor(0, 0, 1)
+    parts.append('<symbol id="r-conductor" viewBox="-90 -200 180 210" overflow="visible">%s%s</symbol>' % (body, swing))
+    parts.append('<symbol id="podium" viewBox="-80 0 160 62" overflow="visible">%s</symbol>' % podium(0, 0))
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true">%s%s</svg>\n'
+            % (defs(1200, 460), "".join(parts)))
+
+
 def write(name, content):
     with open(os.path.join(OUT, name), "w") as fh:
         fh.write(content)
@@ -846,4 +862,8 @@ write("parallel-waves.svg", parallel_waves())
 write("install-flow.svg", install_flow())
 for skill in SKILLS:
     write("marker-%s.svg" % skill, marker(skill))
+robots_path = (os.path.join(HERE, os.pardir, "skills", "chief", "robots.svg") if OUT == HERE
+               else os.path.join(OUT, "robots.svg"))
+with open(robots_path, "w") as fh:
+    fh.write(dashboard_robots())
 print("ok")

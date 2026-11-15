@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "maestro",
+  "displayName": "Maestro",
+  "version": "1.1.0",
+  "description": "Run coding agents in parallel without collisions: plans that say who owns which file, parallel builds with reviews, and chief, an orchestrator that routes work across Claude and Codex.",
+  "author": {
+    "name": "Vagif Gozal",
+    "url": "https://github.com/vgozalov"
+  },
+  "homepage": "https://github.com/vgozalov/maestro",
+  "repository": "https://github.com/vgozalov/maestro",
+  "license": "MIT",
+  "keywords": [
+    "orchestration",
+    "parallel-agents",
+    "subagents",
+    "codex",
+    "planning",
+    "code-review",
+    "tdd",
+    "worktrees"
+  ],
+  "icon": "./assets/marker-chief.svg",
+  "hooks": "./hooks/claude-code.json"
+}

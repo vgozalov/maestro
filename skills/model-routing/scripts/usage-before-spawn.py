@@ -13,10 +13,16 @@ global install in ~/.claude/skills):
     {"matcher": "Bash", "hooks": [{"type": "command", "timeout": 75, "if": "Bash(*run-codex-job.py*)",
       "command": "python3 -B \"$CLAUDE_PROJECT_DIR/.claude/skills/model-routing/scripts/usage-before-spawn.py\""}]}
   ]
+
+The maestro plugin registers it itself (hooks/claude-code.json) with --during-chief-run: it then
+stays silent unless a chief run is active in the session's repository (the chief-run marker
+that git-check.py --start-run creates), so ordinary sessions never wait on a usage read.
 """
 import importlib.util
 import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -65,14 +71,31 @@ def usage_note(readings, pick, why, spawn):
     return f"Usage before this spawn: {accounts}. Routing: pick {pick} ({why}). This spawn runs on {provider} ({model}) and {fit}."
 
 
+def chief_run_active(cwd):
+    """True when the repository at cwd holds the chief-run marker; False outside git."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", cwd or ".", "rev-parse", "--git-path", "chief-run"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if completed.returncode != 0:
+        return False
+    return os.path.exists(os.path.join(cwd or ".", completed.stdout.strip()))
+
+
 def hook_output(note):
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": note}}
 
 
 def main():
     try:
-        spawn = describe_spawn(json.load(sys.stdin))
+        hook_input = json.load(sys.stdin)
+        spawn = describe_spawn(hook_input)
         if spawn is None:
+            return 0
+        if "--during-chief-run" in sys.argv[1:] and not chief_run_active(hook_input.get("cwd")):
             return 0
         usage = load_usage_check()
         readings = usage.read_usage(CACHE_SECONDS)

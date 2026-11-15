@@ -65,8 +65,11 @@ test_start_phase_and_summary_from_the_command_line() {
   local out run
   command -v python3 >/dev/null || return 0
   git init -q -b main repo
+  export CHIEF_HOME="$PWD/chief-home" CHIEF_DASHBOARD=off
   out=$(cd repo && printf 'Client asks for CSV export\n' | python3 -B "$SKILL_DIR/scripts/chief-run.py" start --title "CSV export")
   assert_contains "$out" '"id": "' "start prints the id"
+  assert_contains "$out" '"dashboard": "http://127.0.0.1:8765/?run=' "start prints the shared dashboard link"
+  assert_eq 1 "$(find chief-home/runs -name '*.json' | wc -l | tr -d ' ')" "start registers the run for the shared dashboard"
   run=$(cd repo && ls .chief/runs)
   out=$(cd repo && python3 -B "$SKILL_DIR/scripts/chief-run.py" phase "$run" plan)
   assert_contains "$out" '"phase": "plan"' "phase recorded"

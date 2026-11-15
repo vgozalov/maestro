@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.1.0 (2026-11-14)
+
+### Maestro: one plugin for Claude Code and Codex
+
+- The repo is now `vgozalov/maestro` (it was `vgozalov/skills`). GitHub redirects the old name, and `install.sh` still treats a `vgozalov/skills` line in a manifest as this repo, so existing manifests keep working.
+
+- The repo now installs as the `maestro` plugin, with updates delivered by each tool's own marketplace. Claude Code: `/plugin marketplace add vgozalov/maestro`, then `/plugin install maestro@maestro` (turn on auto-update for the marketplace in `/plugin` → Marketplaces). Codex: `codex plugin marketplace add vgozalov/maestro`, then `codex plugin add maestro@maestro`.
+- Plugin skills are namespaced: `/maestro:chief`, `maestro:parallel-build`, and the agent `maestro:chief`.
+- In Claude Code the plugin registers the usage hook itself (`hooks/claude-code.json`), so `configure-hooks.py` is needed only for the optional auto-save patch. The plugin's hook runs only while a chief run is active (`usage-before-spawn.py --during-chief-run`), so ordinary sessions never wait on a usage read. `check-account-usage.py` reports `spawn_hook: registered` when the plugin carries it.
+- Codex gets the skills and no hooks, which keeps the plugin eligible for OpenAI's directory.
+- `npx skills add` and `install.sh` keep working; install one way, not both, or every skill appears twice.
+- Tests: `tests/plugin.test.sh` keeps both manifests, both marketplaces and the newest CHANGELOG entry on one name and one version.
+
+### Chief: one dashboard for every repo and worktree
+
+- Fixed: chiefs running at once in two repos, or in several worktrees of one repo, could not share the dashboard. Runs were listed only from the checkout `serve` started in, and a second `serve` failed on port 8765 that was already taken, so the second run's `?run=` link opened a dashboard that did not know it.
+- Each run now leaves a pointer in `~/.chief/runs/` (`CHIEF_HOME` overrides), and the dashboard lists every registered run on the machine, with a filter per repo, the repo on each card, and git warnings per checkout. Plan, progress and handoff files open from the run's own checkout.
+- The chief starts the dashboard itself: `chief-run.py start` and every phase change except `done` start it in the background (in its own session, so it outlives the chief's shell) when none answers, and join it when one does. A chief dashboard older than the script, including the single-repo one from 1.0, is stopped and replaced; anything else on the port is left alone and reported. The output carries `dashboard` (this run's link) and `dashboard_server` (`running`, `started`, `replaced`, `failed` or `off`).
+- A dashboard started this way exits after 6 hours with no page open (`serve --idle-hours`); the next run starts it again. Its log is `~/.chief/dashboard.log`. `CHIEF_DASHBOARD_PORT` sets the port, `CHIEF_DASHBOARD=off` turns the automatic start off, and `chief-run.py dashboard` starts or joins it by hand.
+- `serve` started while a current dashboard is running prints its address and exits. `serve`, `board` and `dashboard` work outside a git repo.
+- Run links use a key that is unique across repos (`<run id>@<repo hash>`, printed by `start` as `dashboard`); a bare run id still opens when only one repo has it.
+- Runs that ended more than 14 days ago move to the archived view (`--days`, 0 turns that off). Pointers to removed worktrees are dropped. `chief-run.py register` adds a checkout's earlier runs; `phase` registers its run too.
+- The board reads each main-session transcript once per change instead of on every poll for every run.
+
+### Chief: the Concert Hall dashboard
+
+- The dashboard is redrawn in the README's style. The stage at the top shows every live run as an ensemble: its chief as the conductor on a podium and each working agent as a brass robot under its own lamp, with the agent's latest tool call beneath it. The instrument is the role (violin research, clarinet plan and fix, cello implement, trumpet review, double bass git); brass is Claude, verdigris is ChatGPT. Working robots sway and send up notes; anyone with reduced motion turned on sees them still. Ensembles wrap onto a second row rather than shrinking past readability.
+- Run cards are short: the title, a seven-bar staff for the phases with the plan's tasks as notes on it, the number of players, a count per role and the Claude/ChatGPT cost split. The agents themselves are in the run's score, which opens on click: time per phase as measures, plan tasks by wave with their area (from the top folders in each task's Owns paths), agents by section, and the selected agent's recent tool calls and reply.
+- The header shows the spend of all runs, the last 24 hours with a sparkline, the burn rate over the last hour, and each account's 5-hour and weekly use as a needle dial with the 60% switch line.
+- Everything is read from files already on disk, so watching the board costs no tokens: tool calls come from Claude Code's transcripts and from each Codex job's `events.jsonl`, task status from the plan, the build ledger's `Task N:` lines and the live agents, and an agent counts as blocked or failed from the first word of its reply (`DONE`, `BLOCKED`, `FAILED`, also after `Status:`). Roles match by prefix, so `implementer`, `reviewer`, `fixer` and `plan-review` land in their sections.
+- Archive: finished runs can be archived one at a time from their score, all at once from the Done column, or with `chief-run.py archive <run>... | --done [--restore]`. Archived runs move to their own view and can be restored; their spend still counts in the all-runs total. An unfinished run with no agent working and no phase change for two hours shows as quiet, leaves the stage, and can be archived too. Run state lives on disk, so it survives a restart; a run whose session ended without `done` turns quiet instead of looking busy forever.
+- The page stays self-contained: the robots come from `assets/generate.py` (`skills/chief/robots.svg`) and its three typefaces ship with the skill as small WOFF2 files under SIL OFL 1.1, so nothing is fetched from another host. The archive endpoint accepts only requests carrying the page's own header.
+
 ## 1.0.1 (2026-11-12)
 
 - Fixed: `model-routing`'s `description` held an unquoted `: `, which is invalid YAML, so `npx skills add` and `npx skills update` refused the skill. The text is unchanged apart from a dash in place of that colon.

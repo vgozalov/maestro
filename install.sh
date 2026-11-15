@@ -2,14 +2,14 @@
 # Install the skills listed in a manifest through the `skills` CLI.
 #
 # Usage: install.sh [--global] [--dry-run]
-#        curl -fsSL https://raw.githubusercontent.com/vgozalov/skills/main/install.sh | bash -s -- [flags]
+#        curl -fsSL https://raw.githubusercontent.com/vgozalov/maestro/main/install.sh | bash -s -- [flags]
 #   (default)  project scope: manifest is <git toplevel>/.agents/skills.txt
 #   --global   user scope (-g): manifest is global.txt next to this script, or
 #              fetched from GLOBAL_MANIFEST_URL when run from stdin
 #   --dry-run  print the commands instead of running them
 #
 # Env: SKILLS_CLI (default "npx -y skills@1.7.2"), HOSTED_SOURCE (default
-#      "vgozalov/skills"; its lines are installed last), MANIFEST (override path),
+#      "vgozalov/maestro", also matching its former name vgozalov/skills; its lines are installed last), MANIFEST (override path),
 #      GLOBAL_MANIFEST_URL (default: this repo's global.txt on main).
 #
 # Manifest lines: "<source>[#tag] <skill|*>... [# comment]"; blank lines and
@@ -20,8 +20,11 @@ set -f # a literal `*` in the manifest must never be glob-expanded
 export DISABLE_TELEMETRY=1 DO_NOT_TRACK=1
 
 SKILLS_CLI=${SKILLS_CLI:-npx -y skills@1.7.2}
-HOSTED_SOURCE=${HOSTED_SOURCE:-vgozalov/skills}
-GLOBAL_MANIFEST_URL=${GLOBAL_MANIFEST_URL:-https://raw.githubusercontent.com/vgozalov/skills/main/global.txt}
+HOSTED_SOURCE=${HOSTED_SOURCE:-vgozalov/maestro}
+# The repo was called vgozalov/skills before 1.1.0; GitHub redirects the old name, and manifests that still use it
+# keep installing it last.
+FORMER_SOURCE=vgozalov/skills
+GLOBAL_MANIFEST_URL=${GLOBAL_MANIFEST_URL:-https://raw.githubusercontent.com/vgozalov/maestro/main/global.txt}
 
 # Empty when the script arrives on stdin (`curl ... | bash`), so there is no clone to read from.
 SCRIPT_DIR=
@@ -81,6 +84,7 @@ norm_source() {
   printf '%s' "$s"
 }
 hosted_norm=$(norm_source "$HOSTED_SOURCE")
+former_norm=$(norm_source "$FORMER_SOURCE")
 
 # Entries are "source skill skill..." strings, split again when run.
 plain=()
@@ -102,7 +106,8 @@ while IFS= read -r line || [ -n "$line" ]; do
   done
   [ "$skills" -gt 0 ] || die "$MANIFEST: line $lineno: source '${tokens[0]}' lists no skills"
 
-  if [ "$(norm_source "${tokens[0]}")" = "$hosted_norm" ]; then
+  source_norm=$(norm_source "${tokens[0]}")
+  if [ "$source_norm" = "$hosted_norm" ] || { [ "$hosted_norm" = "vgozalov/maestro" ] && [ "$source_norm" = "$former_norm" ]; }; then
     hosted+=("$entry")
   else
     plain+=("$entry")

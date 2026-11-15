@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 TIMEOUT_SECONDS = 60
 SWITCH_AT_5H_USED = 60
@@ -140,8 +141,22 @@ def read_usage(max_age, cache_path=CACHE_PATH, readers=READERS):
     return readings
 
 
-def spawn_hook_registered(project, home):
-    """True when usage-before-spawn.py is registered in the project's or the user's settings."""
+def plugin_root():
+    """The maestro plugin's root when these scripts run from it (skills/model-routing/scripts/)."""
+    return Path(__file__).resolve().parents[3]
+
+
+def spawn_hook_registered(project, home, plugin=None):
+    """True when usage-before-spawn.py is registered in the project's or the user's settings,
+    or by the plugin these scripts were installed with (a hooks/*.json file in it)."""
+    plugin = plugin_root() if plugin is None else Path(plugin)
+    if (plugin / ".claude-plugin" / "plugin.json").is_file():
+        for hooks_file in sorted((plugin / "hooks").glob("*.json")):
+            try:
+                if "usage-before-spawn.py" in hooks_file.read_text(encoding="utf-8"):
+                    return True
+            except OSError:
+                continue
     for path in (
         os.path.join(project, ".claude", "settings.json"),
         os.path.join(project, ".claude", "settings.local.json"),
