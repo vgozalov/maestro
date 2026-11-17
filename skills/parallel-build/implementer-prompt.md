@@ -75,7 +75,6 @@ Subagent (general-purpose):
       `git commit <your files> -m ...`. Never `git add -A`, `git add .`,
       `git commit -a`, `git stash`, `git reset`, `git checkout -- <path>` or
       `git clean` — each touches siblings' uncommitted work.
-    - Commits and PRs: the repo's git user only; no model author, Co-Authored-By or AI attribution.
     - If git reports `index.lock` exists, wait a few seconds and retry.
     - Your Verification Scope covers only your own files; expect other
       files to change under you. If the typecheck reports errors only in

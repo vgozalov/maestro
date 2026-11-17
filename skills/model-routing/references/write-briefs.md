@@ -114,7 +114,6 @@ git-check.py warnings: <paste>
 Do exactly what the user approved, nothing else:
 - Replace the auto-save commits <shas> with one commit, message: <conventional message the user approved>. Use `git reset --soft <commit before the first auto-save>` only when every later commit is in that list; otherwise stop and report. If the branch is pushed, stop and ask before rewriting it.
 - Stage by explicit path. Never `git add -A`, `git add .` or `git commit -a`.
-- Commits and PRs: the repo's git user only; no model author, Co-Authored-By or AI attribution.
 - Skip-worktree file <path>: commit only the hunks <describe>. `git update-index --no-skip-worktree <path>`, `git add -p <path>`, commit, then `git update-index --skip-worktree <path>`. Never commit a local URL.
 - Delete stray files: <paths>.
 Then run `python3 <skill folder>/scripts/git-check.py` and return its warnings, `git status --short` and `git log --oneline <base>..HEAD`.
