@@ -92,8 +92,10 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .status-line { color: var(--muted); font: 12px var(--f-mono); margin: 0 0 10px; }
 
 /* programme */
-.prog { display: flex; gap: 10px; align-items: flex-start; }
-.col { flex: 1 1 0; min-width: 0; display: grid; gap: 10px; align-content: start; }
+.prog { display: flex; gap: 10px; align-items: flex-start; overflow-x: auto; }
+.col { flex: 1 1 0; min-width: 260px; max-width: 360px; display: grid; gap: 10px; align-content: start; }
+.col.archived { flex: 1 1 100%; max-width: none; }
+.grid-archived { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 360px)); gap: 10px; justify-content: start; }
 .col-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 4px 4px 8px; border-bottom: 1.5px solid var(--line); }
 .col-head h2 { margin: 0; font: 400 21px/1 var(--f-display); }
 .col-head .n { font: 12px var(--f-mono); color: var(--muted); }
@@ -101,14 +103,14 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .col-head .link { font: 500 11.5px var(--f-mono); color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
 .col-head .link:hover { color: var(--gold-lt); }
 .col.playing .col-head { border-bottom-color: rgba(255,196,94,.6); }
-.col.rail { flex: 0 0 34px; }
+.col.rail { flex: 0 0 34px; min-width: 34px; }
 .col.rail .col-head { writing-mode: vertical-rl; transform: rotate(180deg); height: 150px; padding: 8px 6px; border: 0; border-left: 1.5px solid var(--line); justify-content: flex-end; gap: 8px; }
 .col.rail .col-head h2 { font-size: 17px; color: var(--muted); }
 .confirm { display: grid; gap: 8px; padding: 10px 12px; font-size: 13px; }
 .confirm .row { display: flex; gap: 8px; }
 .empty { color: var(--muted); font: italic 400 20px/1.3 var(--f-display); padding: 30px 8px; text-align: center; }
 
-.card { text-align: left; width: 100%; padding: 12px 14px; display: grid; gap: 8px; transition: border-color .15s, transform .15s; }
+.card { text-align: left; width: 100%; max-width: 360px; padding: 12px 14px; display: grid; gap: 8px; transition: border-color .15s, transform .15s; }
 .card:hover { border-color: rgba(228,176,74,.6); transform: translateY(-1px); }
 .card.done { opacity: .8; }
 .card.quiet { opacity: .62; border-style: dashed; }
@@ -146,7 +148,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .close { font: 500 12px/1 var(--f-mono); border: 1.5px solid var(--line); padding: 9px 12px; border-radius: 10px; }
 .close:hover { border-color: var(--gold); }
 .measures { padding: 10px 20px 12px; border-bottom: 1.5px solid var(--line); overflow-x: auto; }
-.measures svg { display: block; width: 100%; min-width: 640px; height: 64px; }
+.measures svg { display: block; width: 100%; min-width: 640px; height: auto; }
 .s-body { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr); min-height: 0; }
 .s-main { overflow: auto; padding: 16px 20px 22px; display: grid; gap: 20px; align-content: start; }
 .s-side { overflow: auto; border-left: 1.5px solid var(--line); padding: 16px 20px 22px; display: grid; gap: 14px; align-content: start; background: rgba(10,6,4,.35); }
@@ -195,10 +197,8 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 @media (max-width: 1100px) {
-  .prog { flex-wrap: wrap; }
-  .col { flex: 1 1 260px; }
-  .col.rail { flex: 1 1 100%; }
-  .col.rail .col-head { writing-mode: horizontal-tb; transform: none; height: auto; border-left: 0; border-bottom: 1.5px dashed var(--line); padding: 4px; }
+  .prog { flex-wrap: nowrap; scroll-snap-type: x proximity; padding-bottom: 8px; }
+  .col { flex: 0 0 clamp(260px, 80vw, 360px); scroll-snap-align: start; }
   .s-body { grid-template-columns: 1fr; overflow: auto; }
   .s-main, .s-side { overflow: visible; }
   .s-side { border-left: 0; border-top: 1.5px solid var(--line); }
@@ -289,26 +289,32 @@ const instrument = (a) => INSTRUMENT[a.kind] || 'violin'
 /* ---------- small drawings ---------- */
 function noteHead(x, y, status, r = 4.2) {
   const [color, kind] = NOTE[status] || NOTE.queued
-  const shape = `cx="${x}" cy="${y}" rx="${r * 1.2}" ry="${r * .85}" transform="rotate(-20 ${x} ${y})"`
-  const head = kind === 'hollow' ? `<ellipse ${shape} fill="none" stroke="${color}" stroke-width="1.3"/>`
-    : `<ellipse ${shape} fill="${color}"${kind === 'glow' ? ' style="filter:drop-shadow(0 0 4px #FFC45E)"' : ''}/>`
-  return head + `<path d="M ${x + r * 1.1} ${y} V ${y - r * 5}" stroke="${color}" stroke-width="1.2"/>`
+  const rot = `transform="rotate(-20 ${x} ${y})"`, at = `cx="${x}" cy="${y}"`
+  const shape = `rx="${+(r * 1.2).toFixed(2)}" ry="${+(r * .85).toFixed(1)}"`  // 3.12 x 2.2 at r 2.6, about 6 px wide
+  // A glow is a wider, fainter ellipse behind the head: a shape, not a filter, so it stays sharp at any zoom.
+  const halo = kind === 'glow' ? `<ellipse rx="${+(r * 1.2 * 1.6).toFixed(2)}" ry="${+(r * .85 * 1.6).toFixed(2)}" ${at} ${rot} fill="#FFC45E" opacity=".3"/>` : ''
+  const head = kind === 'hollow' ? `<ellipse ${shape} ${at} ${rot} fill="none" stroke="${color}" stroke-width="1.3"/>`
+    : `<ellipse ${shape} ${at} ${rot} fill="${color}"/>`
+  return halo + head + `<path d="M ${x + r * 1.1} ${y} V ${y - r * 5}" stroke="${color}" stroke-width="1.2"/>`
 }
 function cardStaff(r) {
   // Five staff lines, bar lines between the seven phases, the current phase lit; plan tasks sit on it as notes.
-  const W = 240, i = Math.max(0, phaseIndex(r.phase)), done = r.phase === 'done'
+  // No viewBox: the svg fills the card and draws in pixels. Lines and bars are placed by percentage; each note is a
+  // nested 1x1 svg at a percentage x whose head is drawn in fixed pixels, so heads stay round and about 6 px wide.
+  const i = Math.max(0, phaseIndex(r.phase)), done = r.phase === 'done', lit = !done && r.phase !== 'paused'
+  const pc = (v) => +(v * 100).toFixed(3) + '%', seg = 1 / 7
   let s = ''
-  for (let k = 0; k < 5; k++) s += `<path d="M 0 ${6 + k * 4.5} H ${W}" stroke="rgba(228,176,74,.28)" stroke-width=".8"/>`
-  for (let k = 0; k <= 7; k++) s += `<path d="M ${k * W / 7} 6 V 24" stroke="rgba(228,176,74,${k === 0 || k === 7 ? .6 : .3})" stroke-width="${k === 0 || k === 7 ? 1.4 : .8}"/>`
-  if (!done && r.phase !== 'paused') s += `<rect x="${i * W / 7 + 1}" y="6" width="${W / 7 - 2}" height="18" fill="rgba(255,196,94,.16)"/>`
-  for (let k = 0; k < 7; k++) if (done || k < i) s += `<rect x="${k * W / 7 + 1}" y="27" width="${W / 7 - 2}" height="2" fill="rgba(228,176,74,.55)"/>`
-  if (!done && r.phase !== 'paused') s += `<rect x="${i * W / 7 + 1}" y="27" width="${W / 7 - 2}" height="2" fill="#FFC45E" style="filter:drop-shadow(0 0 3px #FFC45E)"/>`
-  const tasks = r.tasks || []
-  if (tasks.length) {
-    const box = i * W / 7, shown = tasks.slice(0, 12), step = Math.min(10, (W / 7 - 6) / shown.length)
-    shown.forEach((t, k) => { s += noteHead(box + 5 + k * step, 19 - (k % 3) * 2.2, t.status, 2.6) })
-  }
-  return `<svg class="staff" viewBox="0 0 ${W} 30" preserveAspectRatio="none" aria-label="phase ${esc(r.phase)}${tasks.length ? ', ' + tasks.length + ' plan tasks' : ''}">${s}</svg>`
+  for (let k = 0; k < 5; k++) s += `<line x1="0" x2="100%" y1="${6 + k * 4.5}" y2="${6 + k * 4.5}" stroke="rgba(228,176,74,.28)" stroke-width=".8"/>`
+  for (let k = 0; k <= 7; k++) { const edge = k === 0 || k === 7; s += `<line x1="${pc(k * seg)}" x2="${pc(k * seg)}" y1="6" y2="24" stroke="rgba(228,176,74,${edge ? .6 : .3})" stroke-width="${edge ? 1.4 : .8}"/>` }
+  if (lit) s += `<rect x="${pc(i * seg)}" y="6" width="${pc(seg)}" height="18" fill="rgba(255,196,94,.16)"/>`
+  for (let k = 0; k < 7; k++) if (done || k < i) s += `<rect x="${pc(k * seg)}" y="27" width="${pc(seg)}" height="2" fill="rgba(228,176,74,.55)"/>`
+  if (lit) s += `<rect x="${pc(i * seg)}" y="26" width="${pc(seg)}" height="4" fill="rgba(255,196,94,.35)"/><rect x="${pc(i * seg)}" y="27" width="${pc(seg)}" height="2" fill="#FFC45E"/>`
+  const tasks = r.tasks || [], shown = tasks.slice(0, 12)
+  shown.forEach((t, k) => {
+    const at = shown.length === 1 ? i + .5 : i + .12 + k * (.76 / (shown.length - 1))
+    s += `<svg x="${pc(at * seg)}" y="${+(19 - (k % 3) * 2.2).toFixed(1)}" width="1" height="1" overflow="visible">${noteHead(0, 0, t.status, 2.6)}</svg>`
+  })
+  return `<svg class="staff" aria-label="phase ${esc(r.phase)}${tasks.length ? ', ' + tasks.length + ' plan tasks' : ''}">${s}</svg>`
 }
 function meter(name, reading, color) {
   const five = reading && reading['5h'] != null ? Math.round(reading['5h']) : null
@@ -332,9 +338,10 @@ function meter(name, reading, color) {
 function sparkline(values) {
   const max = Math.max(...values, 0.0001), n = values.length
   const pts = values.map((v, i) => `${(i / (n - 1)) * 120},${17 - (v / max) * 15}`).join(' ')
-  const lastY = 17 - (values[n - 1] / max) * 15
+  // Only the area and the line are drawn, so stretching the box is harmless; the stroke keeps its pixel width.
+  // The end dot is gone: it stretched into an ellipse.
   return `<svg viewBox="0 0 120 18" preserveAspectRatio="none" aria-hidden="true"><polygon points="0,18 ${pts} 120,18" fill="rgba(255,196,94,.14)"/>
-    <polyline points="${pts}" fill="none" stroke="#FFC45E" stroke-width="1.2" vector-effect="non-scaling-stroke"/><circle cx="119" cy="${lastY}" r="1.8" fill="#FFC45E"/></svg>`
+    <polyline points="${pts}" fill="none" stroke="#FFC45E" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg>`
 }
 function notesFrom(x, y, k, color) {
   let out = ''
@@ -464,8 +471,8 @@ function renderProgramme() {
     return
   }
   if (view === 'archived') {
-    $('prog').innerHTML = `<section class="col"><div class="col-head"><h2>Archived</h2><span class="n">${runs.length}</span></div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px">${runs.map(card).join('')}</div></section>`
+    $('prog').innerHTML = `<section class="col archived"><div class="col-head"><h2>Archived</h2><span class="n">${runs.length}</span></div>
+      <div class="grid-archived">${runs.map(card).join('')}</div></section>`
     return
   }
   $('prog').innerHTML = COLS.map(([key, label]) => {
@@ -504,7 +511,7 @@ function measures(r) {
     x += w
   })
   s += `<path d="M ${x} 14 V 38 M ${x + 4} 14 V 38" stroke="rgba(228,176,74,.7)" stroke-width="1.6"/>`
-  return `<svg viewBox="0 0 ${x + 8} 60" preserveAspectRatio="none" role="img" aria-label="Time in each phase">${s}</svg>`
+  return `<svg viewBox="0 0 ${x + 8} 60" role="img" aria-label="Time in each phase">${s}</svg>`
 }
 function figure(kind, vb, extra = '') {
   const [x, y, w, h] = vb.split(' ')
