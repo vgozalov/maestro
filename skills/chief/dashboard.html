@@ -257,6 +257,15 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .col.rail { flex: 0 0 34px; min-width: 34px; }
 .col.rail .col-head { writing-mode: vertical-rl; transform: rotate(180deg); height: 150px; padding: 8px 6px; border: 0; border-left: 1.5px solid var(--line); justify-content: flex-end; gap: 8px; }
 .col.rail .col-head h2 { font-size: 17px; color: var(--muted); }
+/* The board is a size container. Under 900px it is the layout above (one card per row, the board scrolls sideways); from 900px a busy
+   column lays its cards 2-3 across. --n cards in the column (flex-grow: the busy column takes the spare width), --b cards across it
+   asks for first (flex-basis), --a most cards across (max-width). Tracks stay 260-360px; empty columns stay rails. */
+.prog-wrap { container: board / inline-size; }
+.cards { display: grid; gap: 10px; grid-template-columns: minmax(0, 360px); justify-content: start; align-content: start; }
+@container board (min-width: 900px) {
+  .col:not(.rail):not(.archived) { flex: var(--n) 1 calc(var(--b) * 260px + (var(--b) - 1) * 10px); max-width: calc(var(--a) * 360px + (var(--a) - 1) * 10px); }
+  .col:not(.rail):not(.archived) .cards { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+}
 .confirm { display: grid; gap: 8px; padding: 10px 12px; font-size: 13px; }
 .confirm .row { display: flex; gap: 8px; }
 .empty { color: var(--muted); font: italic 400 20px/1.3 var(--f-display); padding: 30px 8px; text-align: center; }
@@ -405,7 +414,7 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
 <div id="missing"></div>
 <div id="notices"></div>
 <p class="status-line" id="status"></p>
-<main class="prog" id="prog" aria-live="polite"></main>
+<div class="prog-wrap"><main class="prog" id="prog" aria-live="polite"></main></div>
 
 <div class="curtain" id="curtain" hidden></div>
 <section class="score" id="score" hidden role="dialog" aria-modal="true" aria-labelledby="s-title"></section>
@@ -894,11 +903,15 @@ const Stage = (() => {
   /* ---------- lifecycle: appear, idle, bow, close, leave, reflow ---------- */
   // FLIP: remember where every stage is, change the DOM, then slide the survivors from their old place.
   // Translate only (a scale would stretch the plate text); every rect is read before the change and once after.
+  // mutate(measure) calls measure() right before it first adds, removes or reorders a stage; when it never does
+  // (an unchanged board, every poll) no rect is read at all.
   function flip(mutate) {
-    if (reduce()) return mutate()
-    const kids = [...row.children], was = kids.map((c) => c.getBoundingClientRect().left)
-    mutate()
-    const moves = kids.map((c, k) => [c, c.isConnected && c.parentNode === row ? was[k] - c.getBoundingClientRect().left : 0])
+    if (reduce()) return mutate(() => {})
+    let was = null
+    const measure = () => { if (!was) was = [...row.children].map((c) => [c, c.getBoundingClientRect().left]) }
+    mutate(measure)
+    if (!was) return
+    const moves = was.map(([c, left]) => [c, c.isConnected && c.parentNode === row ? left - c.getBoundingClientRect().left : 0])
     for (const [c, dx] of moves) if (Math.abs(dx) >= 1) c.animate([{ transform: `translateX(${dx.toFixed(1)}px)` }, { transform: 'none' }], { duration: 650, easing: 'cubic-bezier(.3,.1,.2,1)' })
   }
   function bow(st) {                                                               // chief turns to the house and bows, then stays front
@@ -913,9 +926,9 @@ const Stage = (() => {
     if (withBow) bow(st)
     setTimeout(() => { st.root.classList.remove('idle', 'closed'); st.root.classList.add('closing') }, t1)
     setTimeout(() => st.root.classList.add('leaving'), t1 + (R ? 0 : CLOSE_MS))
-    setTimeout(() => flip(() => {
-      clearTimeout(st.timer); clearTimeout(st.qt); sizes.unobserve(st.svg); st.root.remove(); ens.delete(st.id)
-      reconcile(lastList)                                                          // a run that came back meanwhile gets a fresh stage; none left -> placeholder
+    setTimeout(() => flip((measure) => {
+      clearTimeout(st.timer); clearTimeout(st.qt); sizes.unobserve(st.svg); measure(); st.root.remove(); ens.delete(st.id)
+      reconcile(lastList, measure)                                                        // a run that came back meanwhile gets a fresh stage; none left -> placeholder
     }), t1 + (R ? 0 : CLOSE_MS + FADE_MS))
   }
   function opening(st, k) {                                                        // curtains closed, then open (staggered when several appear at once)
@@ -943,9 +956,11 @@ const Stage = (() => {
       labels(st)
     }))
   }
-  function reconcile(list) {
+  // Returns whether it added, removed or reordered a stage in the row; beforeMove() runs once, just before the first such change.
+  function reconcile(list, beforeMove = () => {}) {
     const wanted = [], seen = new Set()
-    let fresh = 0
+    let fresh = 0, moved = false
+    const move = () => { if (!moved) { moved = true; beforeMove() } }
     list.forEach((e) => {
       let st = ens.get(e.id)
       const gone = isGone(e)
@@ -958,34 +973,41 @@ const Stage = (() => {
       if (gone) leave(st, e.chiefState !== 'idle')                                 // done/paused bow; a stale idle stage just draws its curtains
     })
     for (const [id, st] of ens) if (!seen.has(id)) { wanted.push(st); leave(st, false) }
-    if (wanted.length) { if (ghost && ghost.isConnected) ghost.remove() }
-    else { ghost = ghost || buildGhost(); if (!ghost.isConnected) row.appendChild(ghost) }
-    wanted.forEach((st, k) => { if (row.children[k] !== st.root) row.insertBefore(st.root, row.children[k] || null) })
+    if (wanted.length) { if (ghost && ghost.isConnected) { move(); ghost.remove() } }
+    else { ghost = ghost || buildGhost(); if (!ghost.isConnected) { move(); row.appendChild(ghost) } }
+    wanted.forEach((st, k) => { if (row.children[k] !== st.root) { move(); row.insertBefore(st.root, row.children[k] || null) } })
+    return moved
   }
   function render(list) {
     if (!row) return
     lastList = list
-    flip(() => reconcile(list))
+    flip((measure) => reconcile(list, measure))
   }
   return { mount, render, mounted: () => row !== null }
 })()
 
 /* ---------- the stage header ---------- */
-function renderStage() {
-  if (!active) return
+/* The headline and sub count the ensembles on stage, and a run leaves the stage by the clock, so stageTick refreshes them
+   on every poll, changed board or not. Writes only on change. */
+function renderHeadline(list) {
   const runs = active.runs.filter((r) => !filter || r.repo === filter)
-  const ensembles = stageList(Date.now()).filter((e) => !isGone(e))
+  const ensembles = list.filter((e) => !isGone(e))
   const all = ensembles.flatMap((e) => e.agents.filter((a) => a.status === 'running'))
   const waiting = runs.flatMap(stuck).length
-  const repos = new Set(active.runs.map((r) => r.repo)).size
-  $('where').textContent = `${repos} checkout${repos === 1 ? '' : 's'} · ${active.runs.length} run${active.runs.length === 1 ? '' : 's'}`
-  $('headline').innerHTML = all.length
+  const headline = all.length
     ? `${ensembles.length} ensemble${ensembles.length === 1 ? '' : 's'}, <em>${all.length} player${all.length === 1 ? '' : 's'}</em> on stage.`
     : ensembles.length ? `${ensembles.length} chief${ensembles.length === 1 ? '' : 's'} at the podium.` : 'The stage is quiet.'
   const onClaude = all.filter((a) => a.provider === 'claude').length, onGpt = all.length - onClaude
-  $('sub').textContent = all.length
+  const sub = all.length
     ? `${onClaude} on Claude, ${onGpt} on ChatGPT${waiting ? `, ${waiting} waiting for you` : ''}.`
     : ensembles.length ? `No agent is playing right now${waiting ? `; ${waiting} waiting for you` : ''}.` : 'The next chief run lights the stage.'
+  if ($('headline').innerHTML !== headline) $('headline').innerHTML = headline
+  if ($('sub').textContent !== sub) $('sub').textContent = sub
+}
+function renderStage() {
+  if (!active) return
+  const repos = new Set(active.runs.map((r) => r.repo)).size
+  $('where').textContent = `${repos} checkout${repos === 1 ? '' : 's'} · ${active.runs.length} run${active.runs.length === 1 ? '' : 's'}`
   const spend = active.spend || { all_runs: 0, last_24h: 0, burn_per_hour: 0, buckets: [0, 0] }
   $('ledger').innerHTML = `<div><span class="label">all runs</span><span class="v">${money(spend.all_runs)}</span><span class="mix">API-equivalent</span></div>
     <div><span class="label">last 24 h</span><span class="v">${money(spend.last_24h)}</span>${sparkline(spend.buckets)}</div>
@@ -998,7 +1020,9 @@ function renderStage() {
    idle, leaving after IDLE_LEAVE and coming back happen on an unchanged board too. Adds no timer. */
 function stageTick(nowMs = Date.now()) {
   if (!Stage.mounted() && typeof ResizeObserver === 'function') Stage.mount($('stage-row'), { curtains: true })
-  Stage.render(stageList(nowMs))
+  const list = stageList(nowMs)
+  Stage.render(list)
+  if (active) renderHeadline(list)
 }
 
 /* ---------- toolbar, notices, programme ---------- */
@@ -1086,6 +1110,8 @@ function card(r) {
     <div class="cost"><div class="split" title="Claude ${money(c)} · ChatGPT ${money(g)}"><span class="c" style="width:${t ? c / t * 100 : 0}%"></span><span class="g" style="width:${t ? g / t * 100 : 0}%"></span></div><span class="sum">${money(t)}</span></div>
   </button>`
 }
+// A column's size from its card count n: b = cards across it asks for first, a = most cards across (never more than 3).
+const colVars = (n) => ({ n, b: n >= 5 ? 3 : n === 4 ? 2 : 1, a: n <= 3 ? n : n === 4 ? 2 : 3 })
 function renderProgramme() {
   const runs = visible()
   if (!board()) return
@@ -1106,7 +1132,8 @@ function renderProgramme() {
     if (key === 'done') tools = `<span class="tools"><button class="link" type="button" id="archive-done">archive all</button><span class="n">${here.length}</span></span>`
     const ask = key === 'done' && confirmDone ? `<div class="confirm slip"><span>Archive ${here.length} finished run${here.length === 1 ? '' : 's'}? They move to the archived view and their spend still counts in all runs.</span>
       <div class="row"><button class="chip danger" type="button" id="archive-done-yes">archive ${here.length}</button><button class="chip" type="button" id="archive-done-no">keep them</button></div></div>` : ''
-    return `<section class="col ${here.some((r) => live(r).length) ? 'playing' : ''}"><div class="col-head"><h2>${label}</h2>${tools}</div>${ask}${here.map(card).join('')}</section>`
+    const v = colVars(here.length)
+    return `<section class="col ${here.some((r) => live(r).length) ? 'playing' : ''}" style="--n:${v.n};--b:${v.b};--a:${v.a}"><div class="col-head"><h2>${label}</h2>${tools}</div>${ask}<div class="cards">${here.map(card).join('')}</div></section>`
   }).join('')
 }
 

@@ -471,6 +471,28 @@ class CacheBadgeTest(unittest.TestCase):
 ROBOTS = PAGE.parent / "robots.svg"
 
 
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class BoardColumnsTest(unittest.TestCase):
+    def test_column_sizing_by_card_count(self):
+        self.assertEqual(run_page("return [1, 2, 3, 4, 5, 9].map((n) => { const v = colVars(n); return [v.b, v.a] })"),
+                         [[1, 1], [1, 2], [1, 3], [2, 2], [3, 3], [3, 3]])
+
+    def test_a_busy_column_carries_its_vars_and_a_card_grid(self):
+        runs = [sample_run(key=f"k{n}@x", id=f"k{n}", phase="implement") for n in range(4)]
+        html = run_page(f"active = {json.dumps(sample_board(runs))}; renderProgramme(); return $('prog').innerHTML")
+        self.assertIn('style="--n:4;--b:2;--a:2"', html)
+        self.assertEqual(html.count('<div class="cards">'), 1)
+        self.assertIn('class="col rail"', html)  # empty columns are still rails
+
+    def test_the_wide_board_rules_live_in_a_container_query(self):
+        css = page_css()
+        self.assertRegex(css, r"\.prog-wrap\s*\{[^}]*container:\s*board\s*/\s*inline-size")
+        wide = css[css.index("@container board (min-width: 900px)"):]
+        self.assertIn("repeat(auto-fill, minmax(260px, 1fr))", wide)
+        self.assertIn("calc(var(--a) * 360px + (var(--a) - 1) * 10px)", wide)
+        self.assertIn('class="prog-wrap"', PAGE.read_text())
+
+
 def agent(id, role, status="running", provider="claude", model="claude-sonnet-5-5", kind=None):
     return {"id": id, "role": role, "kind": kind or role, "provider": provider, "model": model, "status": status}
 
@@ -572,6 +594,59 @@ class StageTest(unittest.TestCase):
           Date.now = () => {self.NOW} + 6 * 60e3; await poll()
           return [seen, calls]""")
         self.assertEqual(out, [[["thinking"], ["idle"]], 1])
+
+    def test_an_unchanged_board_triggers_no_stage_measurement(self):
+        # A lenient fake DOM: just enough for Stage.mount/render with chief-only ensembles (no seats are built).
+        out = run_page("""
+          let rects = 0
+          const node = () => {
+            const attrs = {}, classes = new Set(), subs = {}
+            const n = { style: { setProperty() {} }, dataset: {}, children: [], parentNode: null, isConnected: false, innerHTML: '', textContent: '', title: '',
+              getAttribute: (k) => attrs[k] ?? null, setAttribute: (k, v) => { attrs[k] = String(v) },
+              classList: { contains: (c) => classes.has(c), toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)), add: (...c) => c.forEach((x) => classes.add(x)), remove: (...c) => c.forEach((x) => classes.delete(x)) },
+              querySelector: (sel) => (subs[sel] ||= node()), appendChild(c) { n.insertBefore(c, null) },
+              insertBefore(c, ref) { if (c.parentNode) c.remove(); const i = ref ? n.children.indexOf(ref) : n.children.length; n.children.splice(i, 0, c); c.parentNode = n; c.isConnected = true },
+              remove() { if (n.parentNode) { n.parentNode.children.splice(n.parentNode.children.indexOf(n), 1); n.parentNode = null; n.isConnected = false } },
+              getBoundingClientRect: () => { rects++; return { left: 0 } }, getBBox() {}, animate() {} }
+            return n
+          }
+          document.createElement = node; document.createElementNS = node
+          globalThis.matchMedia = () => ({ matches: false })
+          globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' })
+          globalThis.ResizeObserver = class { observe() {} unobserve() {} }
+          const later = []
+          globalThis.setTimeout = (fn) => { later.push(fn); return 0 }; globalThis.clearTimeout = () => {}
+          const row = node()
+          Stage.mount(row, { curtains: false })
+          const E = (id) => ({ id, title: id, phase: 'plan', chiefState: 'thinking', idleFor: 0, agents: [] })
+          const step = (list) => { const before = rects; Stage.render(list); return rects - before }
+          const out = { ghost: step([]), ghostAgain: step([]) }
+          out.added = step([E('a')])
+          out.addedMore = step([E('a'), E('b')])
+          out.unchanged = step([E('a'), E('b')])
+          out.updated = step([{ ...E('a'), phase: 'implement', title: 'renamed' }, E('b')])
+          out.reordered = step([E('b'), { ...E('a'), phase: 'implement', title: 'renamed' }])
+          out.removing = step([E('b')])                                   // a stage that left the list is still on stage while it bows out
+          const before = rects; later.splice(0).forEach((fn) => fn()); out.removed = rects - before
+          out.order = row.children.map((c) => c.querySelector('h3').textContent)
+          return out""")
+        self.assertEqual((out["ghost"], out["ghostAgain"]), (0, 0))  # the ghost: the row had no stage to measure
+        self.assertEqual(out["unchanged"], 0)
+        self.assertEqual(out["updated"], 0)  # a title or phase change moves nothing
+        self.assertEqual(out["removing"], 0)
+        for moved in ("added", "addedMore", "reordered", "removed"):
+            self.assertGreater(out[moved], 0, moved)
+        self.assertEqual(out["order"], ["b"])  # the bowing stage was taken out of the row when it finished leaving
+
+    def test_the_ensemble_count_follows_the_clock_on_an_unchanged_board(self):
+        run = sample_run(agents=[agent("chief", "chief", kind="chief")], last_activity=self.iso(360))
+        out = run_page(f"""active = {json.dumps(sample_board([run]))}
+          const heads = []
+          stageTick({self.NOW}); heads.push([$('headline').innerHTML, $('sub').textContent])
+          stageTick({self.NOW} + 31 * 60e3); heads.push([$('headline').innerHTML, $('sub').textContent])
+          return heads""")
+        self.assertEqual(out[0][0], "1 chief at the podium.")
+        self.assertEqual(out[1], ["The stage is quiet.", "The next chief run lights the stage."])
 
     def test_the_stage_is_never_redrawn_wholesale(self):
         html = PAGE.read_text()
