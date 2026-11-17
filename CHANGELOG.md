@@ -14,8 +14,9 @@
 - Every dashboard request checks its Host and header.
 - `DASHBOARD_VERSION` is 4: a running dashboard from an earlier version is replaced.
 - Commits and PRs made through the plugin carry the git user only, no model attribution.
-- The stage is redesigned: each chief run is its own small stage with a proscenium and curtains, and up to 10 playing robot agents grouped by role. The chief conducts while agents work and turns to face the audience on joins, finishes and phase changes.
+- The stage is redesigned: each chief run is its own small stage with a proscenium and curtains, and up to 10 playing robot agents grouped by role. The chief conducts while agents work, rests when the run is idle and bows when it is done; the stage turns to face the audience on joins, finishes and phase changes.
 - A prompt-cache badge on the run card and the score header shows whether the chief session's cache is hot (with the minutes left) or expired.
+- On a wide screen a busy programme column lays its cards two or three across.
 
 ## 1.1.0 (2026-11-14)
 
