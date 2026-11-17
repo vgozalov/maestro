@@ -54,7 +54,7 @@ ROBOTS = SKILL_DIR / "robots.svg"  # drawn by assets/generate.py, the same robot
 FONTS = {name: SKILL_DIR / "fonts" / name for name in ("instrument-serif.woff2", "instrument-sans.woff2", "ibm-plex-mono.woff2")}
 
 PHASES = ["intake", "research", "plan", "plan-review", "approval", "implement", "review", "report", "paused", "done"]
-RUN_TAG = re.compile(r"Run:[ \t]*(.+?)(?=[ \t]+(?:Task|Role):|[ \t]*$)(?:[ \t]+Task:[ \t]*(\S+))?(?:[ \t]+Role:[ \t]*(\S+))?", re.MULTILINE)
+RUN_TAG = re.compile(r"Run:[ \t]*(.+?)(?=[ \t]+(?:Task|Role):|[ \t\r]*$)(?:[ \t]+Task:[ \t]*(\S+))?(?:[ \t]+Role:[ \t]*(\S+))?", re.MULTILINE)
 STALE_SECONDS = 15 * 60
 QUIET_SECONDS = 2 * 3600  # an unfinished run with no agent working and no phase change for this long has gone quiet
 BUCKET_SECONDS = 600  # spend is kept in 10-minute buckets for the sparkline and the burn rate
@@ -1167,11 +1167,15 @@ def refresh_usage_forever(minutes):
         time.sleep(60)
 
 
+def host_allowed(handler):
+    port = handler.server.server_port
+    return handler.headers.get("Host") in (f"127.0.0.1:{port}", f"localhost:{port}")
+
+
 def request_allowed(handler, data):
     """Whether a GET may be answered: the Host names this server (a rebinding page carries its own host), and
     for data the page's own header, which another site cannot add without a CORS preflight this server never answers."""
-    port = handler.server.server_port
-    if handler.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+    if not host_allowed(handler):
         return False
     return not data or handler.headers.get("X-Chief-Dashboard") == "1"
 
@@ -1318,7 +1322,11 @@ def serve(repo, port, refresh_minutes=5, days=DEFAULT_DAYS, idle_hours=0):
             url = urllib.parse.urlparse(self.path)
             data = url.path in ("/board.json", "/file", "/transcript")
             if not request_allowed(self, data):
-                return self.send(403, "This page is out of date — reload it.", "text/plain; charset=utf-8")
+                if not host_allowed(self):
+                    body = f"Open the dashboard at http://127.0.0.1:{self.server.server_port}/ — this host name is not allowed."
+                else:
+                    body = "This page is out of date — reload it."
+                return self.send(403, body, "text/plain; charset=utf-8")
             if url.path != "/health":
                 last_request["at"] = time.time()
             if url.path in ("/", "/index.html"):
@@ -1459,10 +1467,9 @@ def main():
             else:
                 title, text, origin = None, sys.stdin.read(), "chat"
             run_dir = start_run(repo, text, title=args.title or title, source=origin)
-            session_id = load_run(run_dir).get("session_id")
             key = run_key(repo, os.path.basename(run_dir))
             server = ensure_dashboard()
-            print(json.dumps({"run": run_dir, "id": os.path.basename(run_dir), "key": key, "session_id": session_id,
+            print(json.dumps({"run": run_dir, "id": os.path.basename(run_dir), "key": key,
                               "dashboard": f"{server['url']}?run={urllib.parse.quote(key)}",
                               "dashboard_server": server["server"], **({"dashboard_detail": server["detail"]} if "detail" in server else {}),
                               "tag": f"Run: {run_dir}   Task: <id>   Role: <role>"}))

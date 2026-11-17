@@ -372,6 +372,13 @@ class SessionTest(unittest.TestCase):
                          "cd '/a/My Project/it'\\''s' && claude --resume abc")
         self.assertEqual(run_page("return resumeCommand({cwd: null, repo: '/r'}, 'abc')"), "cd '/r' && claude --resume abc")
 
+    def test_the_page_accepts_the_session_ids_the_server_accepts(self):
+        # the server's pattern is ^[A-Za-z0-9-]{1,80}$: no underscore, at most 80 characters
+        self.assertEqual(run_page("return resumeCommand({cwd: '/r'}, 'a'.repeat(80))"), "cd '/r' && claude --resume " + "a" * 80)
+        self.assertIsNone(run_page("return resumeCommand({cwd: '/r'}, 'a'.repeat(81))"))
+        self.assertIsNone(run_page("return resumeCommand({cwd: '/r'}, 'a_b')"))
+        self.assertIsNone(run_page("return resumeCommand({cwd: '/r'}, '')"))
+
     def test_a_session_id_that_is_not_a_plain_token_gets_no_command_or_link(self):
         self.assertIsNone(run_page("return resumeCommand({cwd: '/r'}, 'a;rm -rf ~')"))
         chief = {**self.CHIEF, "session_id": "a;rm -rf ~"}

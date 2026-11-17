@@ -827,6 +827,16 @@ class ArchiveTest(Workspace):
         board = chief.build_board(str(self.repo), config_dir=str(self.config), prices=PRICES, with_git=False, days=14)
         self.assertEqual((board["runs"], board["archived_count"]), ([], 1))
 
+    def test_start_prints_the_run_but_not_the_session_id(self):
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.config), "CHIEF_DASHBOARD": "off", "CLAUDE_CODE_SESSION_ID": "abc-123"}
+        out = subprocess.run([sys.executable, "-B", str(SCRIPT), "start", "--title", "X"], cwd=self.repo, env=env,
+                             input="do the thing", capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        printed = json.loads(out.stdout)
+        self.assertNotIn("session_id", printed)
+        self.assertEqual(printed["id"], Path(printed["run"]).name)
+        self.assertEqual(json.loads((Path(printed["run"]) / "run.json").read_text())["session_id"], "abc-123")
+
     def test_archive_from_the_command_line(self):
         run = self.start(title="X")
         chief.set_phase(str(run), "done")
@@ -936,6 +946,11 @@ class DashboardServerTest(Workspace):
         for path in ("/", "/health", "/board.json", "/fonts/instrument-serif.woff2"):
             self.assertEqual(self.get(path, {**self.OK, **evil})[0], 403, path)
         self.assertEqual(self.get("/board.json"), (403, "This page is out of date — reload it."))
+        status, body = self.get("/board.json", {**self.OK, **evil})
+        self.assertEqual(status, 403)
+        self.assertIn(f"http://127.0.0.1:{self.port}/", body)
+        self.assertIn("host name is not allowed", body)
+        self.assertNotIn("out of date", body)
         self.assertEqual(self.get("/board.json", self.OK)[0], 200)
         self.assertEqual(self.get("/file?run=x&name=task")[0], 403)
         self.assertEqual(self.get("/")[0], 200)
@@ -1021,6 +1036,14 @@ class CodexRecordTest(unittest.TestCase):
     def test_chief_run_reads_the_same_tag(self):
         match = chief.RUN_TAG.search("Run: /a/My Project/r1   Task: 2   Role: fix\nRepo: /a")
         self.assertEqual(match.groups(), ("/a/My Project/r1", "2", "fix"))
+
+    def test_a_tag_from_a_brief_with_windows_line_endings_has_no_carriage_return(self):
+        match = chief.RUN_TAG.search("Run: /a/r1\r\nRepo: /a")
+        self.assertEqual(match.group(1), "/a/r1")
+        match = chief.RUN_TAG.search("Run: /a/My Project/r1   Task: 2   Role: fix\r\nRepo: /a")
+        self.assertEqual(match.groups(), ("/a/My Project/r1", "2", "fix"))
+        match = chief.RUN_TAG.search("Run: /a/r1  \r\n")
+        self.assertEqual(match.group(1), "/a/r1")
 
     def test_records_are_written_into_the_run_folder(self):
         with tempfile.TemporaryDirectory() as folder:

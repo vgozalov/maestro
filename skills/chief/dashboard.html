@@ -1056,7 +1056,7 @@ function sessionCounts(runs) {
   return n
 }
 const shellQuote = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'"
-const SESSION_ID = /^[A-Za-z0-9_-]+$/
+const SESSION_ID = /^[A-Za-z0-9-]{1,80}$/  // the server accepts the same ids (chief-run.py SESSION_ID)
 const resumeCommand = (run, sessionId) => typeof sessionId === 'string' && SESSION_ID.test(sessionId)
   ? `cd ${shellQuote(run.cwd || run.repo)} && claude --resume ${sessionId}` : null
 function sessionBadge(r) {
