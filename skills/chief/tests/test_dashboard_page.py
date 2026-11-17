@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -110,8 +111,7 @@ class LayoutTest(unittest.TestCase):
     def test_there_is_no_page_wide_cap(self):
         css = page_css()
         self.assertNotIn("1600px", css)
-        self.assertNotRegex(css, r"\.hall\b")
-        self.assertNotIn('class="hall"', PAGE.read_text())
+        self.assertNotRegex(css, r"\.hall\s*\{[^}]*max-width")  # the stage's hall is a backdrop, not a cap
 
     def test_the_programme_scrolls_instead_of_squeezing_the_cards(self):
         css = page_css()
@@ -466,6 +466,149 @@ class CacheBadgeTest(unittest.TestCase):
     def test_the_badge_adds_no_timer(self):
         self.assertEqual(PAGE.read_text().count("setInterval("), 1)
         self.assertNotIn("setTimeout(", PAGE.read_text().split("function tickCache")[1].split("\nfunction ")[0])
+
+
+ROBOTS = PAGE.parent / "robots.svg"
+
+
+def agent(id, role, status="running", provider="claude", model="claude-sonnet-5-5", kind=None):
+    return {"id": id, "role": role, "kind": kind or role, "provider": provider, "model": model, "status": status}
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class StageTest(unittest.TestCase):
+    NOW = 1_800_000_000_000  # ms
+
+    def iso(self, ago_s):
+        return datetime.fromtimestamp(self.NOW / 1000 - ago_s, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def ens(self, **run):
+        return run_page(f"return ensembleOf({json.dumps(sample_run(**run))}, {self.NOW})")
+
+    def test_roles_map_to_the_pipeline_sections(self):
+        keys = run_page("return ['research', 'Implementer', 'plan review', 'task-review', 'fix-check', 'steward', 'reviewer', 'fixer', 'weird'].map((r) => sectionOf(r).key)")
+        self.assertEqual(keys, ["research", "implement", "plan-review", "task-review", "fix-check", "git", "review", "fix", "weird"])
+        self.assertEqual(run_page("return [sectionOf('weird').label, sectionOf('weird').k, sectionOf('plan-review').label]"), ["Weird", 4, "Plan review"])
+        self.assertEqual(run_page("return ROLES.map((r) => r.key)"),
+                         ["research", "plan", "plan-review", "implement", "task-review", "review", "fix", "fix-check", "git"])
+
+    def test_model_letters(self):
+        self.assertEqual(run_page("return ['claude-opus-5-5', 'claude-haiku-4-5', 'gpt-5.5-sol', 'gpt-5.5-astra', null].map(modelLetter)"),
+                         ["O", "H", "S", "A", "?"])
+
+    def test_the_chief_state_comes_from_the_board(self):
+        chief = agent("chief", "chief", kind="chief")
+        working = self.ens(agents=[chief, agent("c1", "implement")], last_activity=self.iso(10))
+        self.assertEqual((working["chiefState"], [a["id"] for a in working["agents"]]), ("working", ["c1"]))
+        self.assertEqual(self.ens(agents=[chief, agent("c1", "implement", status="done")], last_activity=self.iso(60))["chiefState"], "thinking")
+        idle = self.ens(agents=[chief], last_activity=self.iso(360))
+        self.assertEqual((idle["chiefState"], idle["idleFor"]), ("idle", 360_000))
+        self.assertEqual(self.ens(phase="done")["chiefState"], "done")
+        self.assertEqual(self.ens(phase="report", ended="2026-11-17T01:00:00Z")["chiefState"], "done")
+        self.assertEqual(self.ens(phase="paused", agents=[agent("c1", "implement")])["chiefState"], "paused")
+        self.assertEqual(self.ens()["idleFor"], 0)  # no last_activity
+
+    def test_which_runs_leave_the_stage(self):
+        gone = lambda **e: run_page(f"return isGone({json.dumps(e)})")
+        self.assertTrue(gone(chiefState="done"))
+        self.assertTrue(gone(chiefState="paused"))
+        self.assertTrue(gone(chiefState="idle", idleFor=30 * 60_000 + 1))
+        self.assertFalse(gone(chiefState="idle", idleFor=29 * 60_000))
+        self.assertFalse(gone(chiefState="thinking", idleFor=10 ** 9))
+
+    def test_the_stage_list_follows_the_repo_filter(self):
+        runs = [sample_run(key="a@1", repo="/x"), sample_run(key="b@1", repo="/y", phase="done")]
+        out = run_page(f"active = {json.dumps(sample_board(runs))}; const all = stageList({self.NOW}).map((e) => e.id); filter = '/x'; return [all, stageList({self.NOW}).map((e) => e.id)]")
+        self.assertEqual(out, [["a@1", "b@1"], ["a@1"]])
+
+    def test_a_batch_spreads_by_role_and_nobody_moves_later(self):
+        out = run_page("""
+          const P = (id, role) => ({ id, role, status: 'running' })
+          const first = seatPlan({}, [], [P('i1', 'implement'), P('r1', 'research'), P('i2', 'implementer'), P('g1', 'git')])
+          const again = seatPlan(first.seats, [], [P('i1', 'implement'), P('r1', 'research'), P('i2', 'implementer'), P('g1', 'git')])
+          const joined = seatPlan(first.seats, [], [P('i1', 'implement'), P('r1', 'research'), P('i2', 'implementer'), P('g1', 'git'), P('i3', 'implement')])
+          return [first, again, joined]""")
+        first, again, joined = out
+        self.assertEqual(first["seats"], {"r1": 1, "i1": 3, "i2": 6, "g1": 8})
+        self.assertEqual(first["entered"], ["r1", "i1", "i2", "g1"])
+        self.assertEqual((again["seats"], again["entered"], again["exited"]), (first["seats"], [], []))
+        self.assertEqual(joined["seats"], {**first["seats"], "i3": 4})  # beside its section, nearest its home chair
+
+    def test_past_ten_players_wait_and_a_walking_chair_stays_reserved(self):
+        out = run_page("""
+          const P = (id) => ({ id, role: 'implement', status: 'running' })
+          const rest = Array.from({ length: 10 }, (_, k) => P('a' + (k + 1)))
+          const full = seatPlan({}, [], [P('a0'), ...rest])
+          const left = seatPlan(full.seats, [], rest)                    // a0 walks off: its chair is not free this poll
+          const held = seatPlan(left.seats, [full.seats.a0], rest)      // still walking
+          const freed = seatPlan(left.seats, [], rest)                   // walked off
+          return [Object.keys(full.seats).length, full.waiting, left.exited, left.waiting, held.waiting, freed.seats.a10, freed.seats.a1]""")
+        self.assertEqual(out, [10, ["a10"], ["a0"], ["a10"], ["a10"], 0, 1])
+
+    def test_face_turns(self):
+        t = lambda prev, **e: run_page(f"return faceTrigger({json.dumps(prev)}, {json.dumps({'phase': 'implement', 'chiefState': 'working', 'agents': [], **e})})")
+        running = lambda *ids: [{"id": i, "role": "implement", "status": "running"} for i in ids]
+        self.assertIsNone(t(None, agents=running("a")))
+        self.assertEqual(t({"phase": "plan", "known": ["a"]}, agents=running("a", "b")), "announce")
+        self.assertEqual(t({"phase": "implement", "known": ["a", "b"]}, agents=running("b", "c")), "thank")
+        self.assertEqual(t({"phase": "implement", "known": ["a"]}, agents=running("a", "b", "c")), "greet")
+        self.assertIsNone(t({"phase": "implement", "known": ["a"]}, agents=running("a")))
+        self.assertIsNone(t({"phase": "plan", "known": []}, chiefState="idle"))
+        gate = lambda st, kind, now: run_page(f"return faceGate({json.dumps(st)}, '{kind}', {now})")
+        self.assertEqual(gate({"facing": None, "readyAt": 0}, "greet", 1), "show")
+        self.assertEqual(gate({"facing": "greet", "readyAt": 0}, "announce", 1), "upgrade")
+        self.assertEqual(gate({"facing": "announce", "readyAt": 0}, "thank", 1), "skip")
+        self.assertEqual(gate({"facing": None, "readyAt": 3500}, "thank", 1000), "skip")
+        self.assertEqual(gate({"facing": None, "readyAt": 3500}, "announce", 1000), "queue")
+        self.assertEqual(run_page("return [COOLDOWN, FACE.greet, FACE.thank, FACE.announce, IDLE_AFTER, IDLE_LEAVE, BOW_HOLD, CAPACITY]"),
+                         [3500, 1900, 2400, 2600, 300_000, 1_800_000, 4000, 10])
+
+    def test_every_poll_moves_the_stage_but_the_programme_is_drawn_once(self):
+        fixed = json.dumps(sample_board([sample_run(last_activity=self.iso(0))]))
+        out = run_page(f"""fetch = async () => ({{ ok: true, status: 200, text: async () => JSON.stringify({fixed}) }})
+          const seen = []; Stage.render = (list) => seen.push(list.map((e) => e.chiefState))
+          let calls = 0; const real = renderProgramme; renderProgramme = () => {{ calls++; real() }}
+          Date.now = () => {self.NOW}; await poll()
+          Date.now = () => {self.NOW} + 6 * 60e3; await poll()
+          return [seen, calls]""")
+        self.assertEqual(out, [[["thinking"], ["idle"]], 1])
+
+    def test_the_stage_is_never_redrawn_wholesale(self):
+        html = PAGE.read_text()
+        self.assertNotIn('id="scene"', html)
+        self.assertIn('id="stage-row"', html)
+        render = html.split("function renderStage")[1].split("\nfunction ")[0]
+        self.assertNotIn("stage-row", render)
+        self.assertEqual(html.count("setInterval("), 1)
+        flip = html.split("function flip")[1].split("\n  function ")[0]
+        self.assertIn("translateX", flip)
+        self.assertNotIn("scaleX", flip)
+        self.assertTrue(run_page("return Stage.mounted() === false && Stage.render([]) === undefined"))
+
+    def test_stage_css(self):
+        css = page_css()
+        self.assertRegex(css, r"\.ens\s*\{[^}]*flex:\s*1 1 0[^}]*min-width:\s*236px[^}]*max-width:\s*486px")
+        self.assertRegex(css, r"\.row\s*\{[^}]*gap:\s*3px[^}]*overflow-x:\s*auto")
+        self.assertRegex(css, r"prefers-reduced-motion[^{]*\{[^@]*\.ens \.cur\s*\{\s*display:\s*none")
+        self.assertRegex(css, r"\.pit \.role\s*\{[^}]*10\.5px")
+        self.assertNotRegex(css, r"\.pit \.role\s*\{[^}]*transition:[^;}]*(left|top)")
+        plate = float(re.search(r"\.ens \.plate h3\s*\{[^}]*?(\d+(?:\.\d+)?)px", css).group(1))
+        card = float(re.search(r"\.card h3\s*\{[^}]*?(\d+(?:\.\d+)?)px", css).group(1))
+        self.assertLessEqual(plate, card)
+        for name, body in re.findall(r"@keyframes\s+([\w-]+)\s*\{((?:[^{}]*\{[^}]*\})*)\s*\}", css):
+            props = set(re.findall(r"([\w-]+)\s*:", body))
+            self.assertLessEqual(props, {"transform", "opacity"}, name)
+
+    def test_the_robots_sprite_has_no_id_clash_and_the_front_chief(self):
+        svg = ROBOTS.read_text()
+        self.assertEqual(svg.count('id="podium"'), 1)  # the symbol only
+        self.assertEqual(svg.count('id="podiumWood"'), 1)
+        self.assertNotIn("url(#podium)", svg)
+        self.assertIn('<symbol id="r-chief-legs"', svg)
+        self.assertIn('<symbol id="r-chief-torso"', svg)
+        gen = (PAGE.parents[2] / "assets" / "generate.py").read_text()
+        self.assertIn("podiumWood", gen)
+        self.assertIn("r-chief-legs", gen)
 
 
 if __name__ == "__main__":

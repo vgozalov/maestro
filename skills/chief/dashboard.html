@@ -22,6 +22,7 @@
   --f-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
   --f-body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --beat: .75s;
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -61,22 +62,172 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .ledger .v { font: 400 26px/1 var(--f-display); font-variant-numeric: tabular-nums; }
 .ledger .v small { font: 500 12px var(--f-mono); color: var(--muted); margin-left: 3px; }
 .ledger svg { width: 100%; height: 18px; display: block; }
-.scene-wrap { overflow-x: auto; }
-.scene { display: block; width: 100%; min-width: 760px; height: auto; }
-.scene .player { cursor: pointer; }
-.scene .player:hover .plate rect, .scene .player:focus .plate rect { stroke: rgba(228,176,74,.6); }
-.scene .glow { animation: breathe 4.6s ease-in-out infinite; }
-.scene .play, .portrait .play { transform-box: fill-box; transform-origin: 50% 100%; animation: play 2.4s ease-in-out infinite; }
-.scene .lead { transform-box: fill-box; transform-origin: 50% 100%; animation: lead 2.8s ease-in-out infinite; }
-.scene .note { opacity: 0; transform-box: fill-box; transform-origin: 50% 50%; animation: rise 3.4s ease-out infinite; }
-.swing { transform-origin: -50px -138px; animation: swing 2.8s ease-in-out infinite; }
+.portrait .play { transform-box: fill-box; transform-origin: 50% 100%; animation: play 2.4s ease-in-out infinite; }
 .patina { filter: hue-rotate(118deg) saturate(.55) brightness(1.02); }
 @keyframes play { 0%, 100% { transform: rotate(-2.2deg) translateY(0); } 25% { transform: rotate(0deg) translateY(-1.5px); } 50% { transform: rotate(2.2deg) translateY(0); } 75% { transform: rotate(0deg) translateY(-1.5px); } }
-@keyframes lead { 0%, 100% { transform: rotate(-1.4deg); } 50% { transform: rotate(1.6deg) translateY(-1px); } }
-@keyframes rise { 0% { opacity: 0; transform: translate(0, 0) scale(.6) rotate(-8deg); } 15% { opacity: .95; } 70% { opacity: .55; } 100% { opacity: 0; transform: translate(var(--dx), -58px) scale(1.05) rotate(12deg); } }
-@keyframes swing { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(4deg); } }
-@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
 @keyframes flicker { 50% { opacity: .5; } }
+
+/* The hall: the dark house around the stages. Each live run is its own small stage (.ens); the hall only holds the row. */
+.hall { position: relative; padding: 16px 2px 8px; overflow: hidden;
+  background: linear-gradient(180deg, #0D0805 0%, #150C07 70%, #1D1109 100%);
+  border-top: 1.5px solid rgba(201,153,60,.55); }
+/* The row: stages share ONE row, 3 px apart. They grow to 486 px, never shrink below 236 px; past that the row scrolls. */
+.hall > .row { display: flex; gap: 3px; overflow-x: auto; scroll-snap-type: x proximity; padding: 2px 0 8px; scrollbar-width: thin; scrollbar-color: rgba(228,176,74,.35) transparent; }
+.row > .ens:first-child { margin-left: auto; }           /* centred when it fits, scrollable from the left edge when not */
+.row > .ens:last-child { margin-right: auto; }
+
+/* ---- one stage per run: gilt frame, valance + title plate (the arch), opening with slim drapes, floor apron ----
+   Width cost of all the chrome: 2 x (2 px frame + 7 px drape) = 18 px. Everything else is full width for the pit. */
+.ens { --dw: 7px; --open-d: 0s; flex: 1 1 0; min-width: 236px; max-width: 486px; scroll-snap-align: center; position: relative; display: flex; flex-direction: column;
+  border: 2px solid #7A5520; border-radius: 18px 18px 5px 5px; overflow: hidden; background: #0D0805;
+  box-shadow: inset 0 0 0 1px rgba(243,213,143,.22), 0 8px 20px rgba(0,0,0,.55); animation: stageIn .6s ease-out; }
+@keyframes stageIn { from { opacity: 0; transform: translateY(8px); } }
+.ens.leaving { opacity: 0; transform: translateY(10px) scale(.97); transition: opacity .55s ease-in, transform .55s ease-in; pointer-events: none; }
+.ens .arch { position: relative; z-index: 5; padding: 13px var(--dw) 6px; background: linear-gradient(180deg, #2E190C, #1A0F08); border-bottom: 2px solid #8A6224; }
+/* top valance: red swag, scalloped lower edge, sways a little */
+.ens .val { position: absolute; left: 0; right: 0; top: 0; height: 15px; z-index: 2; pointer-events: none; transform-origin: 50% 0;
+  background: repeating-linear-gradient(90deg, #1E0A07 0, #7A2B1E 8px, #1E0A07 16px);
+  -webkit-mask: radial-gradient(12px 14px at 11px 0, #000 97%, transparent 100%) 0 0 / 22px 15px repeat-x;
+          mask: radial-gradient(12px 14px at 11px 0, #000 97%, transparent 100%) 0 0 / 22px 15px repeat-x;
+  animation: valance 6.5s ease-in-out infinite alternate; animation-delay: var(--sway-d, 0s); }
+@keyframes valance { from { transform: scaleY(1); } to { transform: scaleY(1.09); } }
+.ens .plate { position: relative; z-index: 1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0 8px; padding: 6px 10px 7px; border: 1.5px solid rgba(201,153,60,.5); border-radius: 11px;
+  background: linear-gradient(180deg, #21160D, var(--night-2)); cursor: pointer; min-width: 0; }
+.ens .plate:hover { border-color: rgba(243,213,143,.75); }
+.ens .plate .lamp { grid-row: span 2; width: 7px; height: 7px; border-radius: 50%; background: var(--lamp); box-shadow: 0 0 8px var(--lamp); animation: flicker 2.4s ease-in-out infinite; }
+.ens.dim .plate .lamp { background: var(--muted); box-shadow: none; animation: none; opacity: .6; }
+.ens .plate h3 { grid-column: 2; margin: 0; font: 400 19px/1.15 var(--f-display); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ens .plate .meta { grid-column: 2; margin: 0; font: 11px/1.3 var(--f-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ens .plate .meta b { color: var(--gold-lt); font-weight: 500; }
+.ens .plate .over { grid-column: 3; grid-row: span 2; font: 600 12px/1 var(--f-mono); color: var(--night); background: var(--gold); border-radius: 999px; padding: 4px 8px; cursor: help; }
+/* the opening: pit between two slim drapes. z: drapes 2, role pills 3, opening curtains 4 */
+.ens .proc { position: relative; isolation: isolate; padding: 0 var(--dw); background: #0D0805; }
+.pit { position: relative; overflow: hidden; background: linear-gradient(180deg, #0D0805, #1A0F08); }
+.ens:not(.dim) .pit { background: radial-gradient(80% 70% at 50% 72%, rgba(255,181,71,.11), transparent 70%), linear-gradient(180deg, #0D0805, #1A0F08); }
+.pit svg { display: block; width: 100%; height: auto; aspect-ratio: 360 / 250; overflow: hidden; }
+.pit .roles { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+.pit .role { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; font: 500 10.5px/1 var(--f-mono); letter-spacing: .02em;
+  color: var(--gold-lt); background: rgba(20,13,8,.78); border: 1px solid rgba(228,176,74,.35); border-radius: 7px; padding: 2px 6px 3px; transition: opacity .4s; }
+.pit .role.gpt { color: #BFE3D8; border-color: rgba(116,185,167,.45); }
+/* side drapes: 28 px wide element, clipped to a tied-back shape: wide gathered top (over the empty top corners of the pit),
+   7 px strip below the tie. They sway from the top. */
+.ens .dr { position: absolute; top: 0; bottom: 0; width: 28px; z-index: 2; pointer-events: none; transform-origin: 50% 0;
+  background: linear-gradient(90deg, rgba(0,0,0,.4), transparent 35%, rgba(0,0,0,.35)), repeating-linear-gradient(90deg, #2A0C08 0, #84291C 5px, #2A0C08 11px);
+  animation-duration: 7s; animation-timing-function: ease-in-out; animation-iteration-count: infinite; animation-direction: alternate; animation-delay: var(--sway-d, 0s); }
+.ens .dr.l { left: 0; clip-path: polygon(0 0, 100% 0, 99% 7%, 90% 15%, 66% 23%, 34% 29%, 25% 36%, 25% 100%, 0 100%); animation-name: swayL; }
+.ens .dr.r { right: 0; clip-path: polygon(100% 0, 0 0, 1% 7%, 10% 15%, 34% 23%, 66% 29%, 75% 36%, 75% 100%, 100% 100%); animation-name: swayR; }
+.ens .dr::after { content: ""; position: absolute; top: 33%; width: 7px; height: 4px; background: linear-gradient(180deg, #F3D58F, #8A6224); border-radius: 1px; }
+.ens .dr.l::after { left: 0; } .ens .dr.r::after { right: 0; }
+@keyframes swayL { from { transform: skewX(-.9deg); } to { transform: skewX(.9deg); } }
+@keyframes swayR { from { transform: skewX(.9deg); } to { transform: skewX(-.9deg); } }
+/* opening curtains: two panels over the pit. closed -> open on first appearance, partly drawn when idle, closed again before the stage leaves */
+.ens .cur { position: absolute; top: 0; bottom: 0; width: 51%; z-index: 4; pointer-events: none; visibility: hidden;
+  background: repeating-linear-gradient(90deg, #1A0907 0, #5A2118 24px, #1A0907 48px);
+  transition: transform 2s cubic-bezier(.6,.05,.25,1) var(--open-d), visibility 0s linear calc(2.1s + var(--open-d)); }
+.ens .cur.l { left: 0; transform: translateX(-101%); border-right: 2px solid rgba(201,153,60,.7); }
+.ens .cur.r { right: 0; transform: translateX(101%); border-left: 2px solid rgba(201,153,60,.7); }
+.ens.idle .cur { visibility: visible; transition: transform 1.6s ease-in-out; }
+.ens.idle .cur.l { transform: translateX(-82%); } .ens.idle .cur.r { transform: translateX(82%); }
+.ens.closing .cur { visibility: visible; transition: transform 1.6s ease-in-out; }
+.ens.closing .cur.l, .ens.closing .cur.r, .ens.closed .cur.l, .ens.closed .cur.r { transform: none; }
+.ens.closed .cur { visibility: visible; transition: none; }
+/* floor apron with its own footlights */
+.ens .apron { position: relative; z-index: 5; height: 26px; background: linear-gradient(180deg, #4C2E17, #23140A); border-top: 2px solid #9A6F2A; }
+.ens .apron::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: 6px; height: 8px; pointer-events: none;
+  background: radial-gradient(6px 3px at 50% 50%, #FFE2A0, rgba(255,210,122,.35) 60%, transparent 100%) 0 0 / 36px 8px repeat-x;
+  animation: flicker calc(var(--beat) * 6) ease-in-out infinite; }
+.ens.dim .apron::after { opacity: .3; animation: none; }
+.ens.dim .val, .ens.dim .dr { filter: brightness(.78) saturate(.85); }
+/* the placeholder stage: curtains drawn, nobody home */
+.ens.ghost .cur { visibility: visible; transition: none; }
+.ens.ghost .cur.l, .ens.ghost .cur.r { transform: none; }
+.ens.ghost .plate { cursor: default; }
+
+/* ---- stage motion: one tempo for the hall ---- */
+.pit .mot { transform-box: fill-box; transform-origin: 50% 100%; animation-timing-function: ease-in-out; animation-iteration-count: infinite; }
+.m-bow   { animation-name: bow;   animation-duration: calc(var(--beat) * 2); }
+.m-cello { animation-name: cello; animation-duration: calc(var(--beat) * 4); }
+.m-bass  { animation-name: bass;  animation-duration: calc(var(--beat) * 4); }
+.m-wind  { animation-name: wind;  animation-duration: calc(var(--beat) * 2); }
+.m-brass { animation-name: brass; animation-duration: calc(var(--beat) * 4); }
+.m-perc  { animation-name: perc;  animation-duration: var(--beat); animation-timing-function: cubic-bezier(.2,.8,.3,1) !important; }
+@keyframes bow   { 0%, 100% { transform: rotate(-2.6deg); } 50% { transform: rotate(2.6deg) translateY(-3px); } }
+@keyframes cello { 0%, 100% { transform: rotate(-2.2deg) translateX(-2px); } 50% { transform: rotate(2.2deg) translateX(2px); } }
+@keyframes bass  { 0%, 100% { transform: rotate(-1.8deg); } 10% { transform: rotate(-1.2deg) translateY(3px); } 50% { transform: rotate(1.8deg); } 60% { transform: rotate(1.2deg) translateY(2px); } }
+@keyframes wind  { 0%, 100% { transform: translateY(0) scale(1); } 45% { transform: translateY(-5px) rotate(-1.4deg) scale(1.015); } }
+@keyframes brass { 0% { transform: rotate(0); } 8% { transform: rotate(-5deg) translateY(-6px); } 40% { transform: rotate(-4deg) translateY(-4px); } 55%, 100% { transform: rotate(0) translateY(0); } }
+@keyframes perc  { 0% { transform: translateY(0); } 9% { transform: translateY(6px) rotate(1.4deg); } 35%, 100% { transform: translateY(0); } }
+.pit .walk { transform-box: fill-box; transform-origin: 50% 100%; }
+.pit .seat { cursor: pointer; }
+.pit .seat:hover .halo, .pit .seat:focus .halo { opacity: .6; }
+.pit .halo { transition: opacity .4s; }
+.pit .note { opacity: 0; transform-box: fill-box; transform-origin: 50% 50%; animation: rise calc(var(--beat) * 8) ease-out infinite; }
+@keyframes rise { 0% { opacity: 0; transform: translate(0, 0) scale(.6) rotate(-8deg); } 6% { opacity: .95; transform: translate(0, -4px) scale(1) rotate(-4deg); } 45% { opacity: .5; } 60%, 100% { opacity: 0; transform: translate(var(--dx), -54px) scale(1.05) rotate(12deg); } }
+.pit .pool { opacity: 0; transition: opacity 1.2s ease; }
+.pit .pool.on { opacity: 1; animation: breathe calc(var(--beat) * 8) ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .72; } }
+.pit .house { transition: opacity 1.2s ease; pointer-events: none; }
+
+/* ---- the chief ----
+   .chief.conduct  run working, >= 1 seated player: 4/4 baton pattern (back view)
+   .chief.study    run thinking, nobody playing: reads a held score, turns a page every 2 bars, practises small beats
+   .chief.rest     run idle: arms down, still (the only static state besides the held front pose at done)
+   .chief.done     front view: bows once, then stands facing the house
+   Face turns (front view, then back): see FACE in the script. */
+.chief .turn { transform-origin: 0 0; }
+.chief .c-arm-r { transform-origin: 24px -122px; }
+.chief .c-fore-r { transform-origin: 50px -134px; }
+.chief .c-arm-l { transform-origin: -24px -122px; }
+.chief .c-head { transform-origin: 0 -136px; }
+.chief .c-body { transform-box: fill-box; transform-origin: 50% 100%; }
+.chief .c-score { opacity: 0; transition: opacity .6s; }
+.chief .c-page { transform-origin: -62px -160px; }
+.chief.conduct .c-arm-r { animation: armR calc(var(--beat) * 4) ease-in-out infinite; }
+.chief.conduct .c-fore-r { animation: foreR calc(var(--beat) * 4) ease-in-out infinite; }
+.chief.conduct .c-arm-l { animation: armL calc(var(--beat) * 8) ease-in-out infinite; }
+.chief.conduct .c-body { animation: dip calc(var(--beat) * 4) ease-in-out infinite; }
+/* 1 down, 2 in, 3 out, 4 up: the shoulder carries height, the elbow carries the sideways sweep */
+@keyframes armR { 0% { transform: rotate(-18deg); } 20% { transform: rotate(16deg); } 26% { transform: rotate(8deg); } 45% { transform: rotate(10deg); } 51% { transform: rotate(4deg); } 70% { transform: rotate(12deg); } 76% { transform: rotate(4deg); } 96%, 100% { transform: rotate(-18deg); } }
+@keyframes foreR { 0% { transform: rotate(0); } 20% { transform: rotate(8deg); } 45% { transform: rotate(-34deg); } 70% { transform: rotate(22deg); } 96%, 100% { transform: rotate(0); } }
+@keyframes armL { 0%, 100% { transform: rotate(4deg); } 25% { transform: rotate(-10deg); } 50% { transform: rotate(2deg); } 75% { transform: rotate(-6deg); } }
+@keyframes dip { 0%, 16%, 40%, 100% { transform: translateY(0); } 21% { transform: translateY(2px); } }
+/* study: score held up in the left hand, head bent to it, page turns on beat 7 of every 8, baton ticks small */
+.chief.study .c-score { opacity: 1; }
+.chief.study .c-arm-l { transform: rotate(14deg); }
+.chief.study .c-page { animation: flip calc(var(--beat) * 8) ease-in-out infinite; }
+.chief.study .c-head { animation: read calc(var(--beat) * 8) ease-in-out infinite; }
+.chief.study .c-arm-r { animation: pracR calc(var(--beat) * 4) ease-in-out infinite; }
+.chief.study .c-fore-r { animation: pracF calc(var(--beat) * 2) ease-in-out infinite; }
+.chief.study .c-body { animation: sway calc(var(--beat) * 8) ease-in-out infinite; }
+@keyframes flip { 0%, 66% { transform: scaleX(1); } 76% { transform: scaleX(.08) translateY(-3px); } 86%, 100% { transform: scaleX(-1); } }
+@keyframes read { 0%, 100% { transform: rotate(-7deg) translateY(1px); } 70% { transform: rotate(-4deg); } 80% { transform: rotate(-9deg) translateY(1.5px); } }
+@keyframes pracR { 0%, 100% { transform: rotate(46deg); } 50% { transform: rotate(38deg); } }
+@keyframes pracF { 0%, 100% { transform: rotate(18deg); } 30% { transform: rotate(4deg); } 55% { transform: rotate(14deg); } }
+@keyframes sway { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(1.5px) translateY(-1px); } }
+.chief.rest .c-arm-r { transform: rotate(78deg); }
+.chief.rest .c-fore-r { transform: rotate(40deg); }
+.chief.rest .c-arm-l { transform: rotate(-112deg); }
+
+/* front view (r-chief-legs + r-chief-torso + jointed arms drawn by the script) */
+.c-front .f-torso { transform-origin: 0 -62px; }
+.c-front .f-arm-b { transform-origin: -22px -122px; transition: transform .45s ease-in-out; }
+.c-front .f-arm-o { transform-origin: 24px -120px; transition: transform .45s ease-in-out; }
+.c-front .f-fore-o { transform-origin: 42px -98px; transition: transform .45s ease-in-out; }
+.c-front.f-greet .f-arm-b { transform: rotate(-70deg); }
+.c-front.f-greet .f-torso { animation: nod .8s ease-in-out 2; }
+.c-front.f-thank.to-l .f-arm-b { transform: rotate(-48deg); }                       /* baton hand opens toward the player on the left */
+.c-front.f-thank.to-r .f-arm-b { transform: rotate(-80deg); }
+.c-front.f-thank.to-r .f-arm-o { transform: rotate(-62deg); }                        /* free hand opens toward the player on the right */
+.c-front.f-thank.to-r .f-fore-o { transform: rotate(-150deg); }
+.c-front.f-thank .f-torso { animation: nod .9s ease-in-out .35s 1 both; }
+.c-front.f-announce .f-arm-b { animation: upbeat calc(var(--beat) * 2) ease-in-out .3s 2 both; }
+.c-front.f-announce .f-arm-o { transform: rotate(-110deg); }
+.c-front.f-announce .f-fore-o { transform: rotate(-60deg); }
+.c-front.f-bow .f-arm-b, .c-front.f-rest .f-arm-b { transform: rotate(-92deg); }
+.c-front.f-bow .f-torso { animation: bowDown 2.2s ease-in-out .35s 1 both; }
+@keyframes nod { 0%, 100% { transform: none; } 40% { transform: translateY(3px) scaleY(.95); } }
+@keyframes upbeat { 0%, 100% { transform: rotate(10deg); } 45% { transform: rotate(22deg) translateY(-4px); } }
+@keyframes bowDown { 0%, 100% { transform: none; } 28%, 62% { transform: translateY(10px) scaleY(.72); } }
 
 /* toolbar, notices */
 .bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 16px 0 12px; }
@@ -204,7 +355,7 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
 .links code { flex: 1 1 100%; font: 12px/1.5 var(--f-mono); background: #0E0805; border: 1.5px solid var(--line); border-radius: 10px; padding: 8px 10px; overflow-wrap: anywhere; user-select: all; }
 .links a.chip { text-decoration: none; }
 
-@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } .ens .cur { display: none; } }
 @media (max-width: 1100px) {
   .prog { flex-wrap: nowrap; scroll-snap-type: x proximity; padding-bottom: 8px; }
   .col { flex: 0 0 clamp(260px, 80vw, 360px); scroll-snap-align: start; }
@@ -223,6 +374,13 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
 </head>
 <body>
 <!--ROBOTS-->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <radialGradient id="haloC" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#D4703C" stop-opacity=".75"/><stop offset="1" stop-color="#D4703C" stop-opacity="0"/></radialGradient>
+  <radialGradient id="haloG" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#74B9A7" stop-opacity=".75"/><stop offset="1" stop-color="#74B9A7" stop-opacity="0"/></radialGradient>
+  <radialGradient id="poolG" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#FFB547" stop-opacity=".30"/><stop offset=".6" stop-color="#FFB547" stop-opacity=".10"/><stop offset="1" stop-color="#FFB547" stop-opacity="0"/></radialGradient>
+  <linearGradient id="riserTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3A2313"/><stop offset="1" stop-color="#2A190D"/></linearGradient>
+  <linearGradient id="podiumFace" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3A2514"/><stop offset="1" stop-color="#150D07"/></linearGradient>
+</defs></svg>
 
 <section class="stage" aria-label="On stage now">
   <div class="stage-top">
@@ -236,7 +394,7 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
       <div class="ledger" id="ledger"></div>
     </div>
   </div>
-  <div class="scene-wrap"><svg class="scene" id="scene" viewBox="0 0 1200 120" role="img" aria-label="Live agents, grouped by run"></svg></div>
+  <div class="hall"><div class="row" id="stage-row" aria-label="Ensembles: one per live chief run"></div></div>
 </section>
 
 <div class="bar">
@@ -259,11 +417,26 @@ const COLS = [['intake', 'Intake'], ['research', 'Research'], ['plan', 'Plan'], 
 const INSTRUMENT = { research: 'violin', plan: 'clarinet', implement: 'cello', review: 'trumpet', fix: 'clarinet', git: 'bass', other: 'violin' }
 const ORDER = ['chief', 'research', 'plan', 'implement', 'review', 'fix', 'git', 'other']
 const NOTE = { done: ['#E4B04A', 'solid'], build: ['#FFC45E', 'glow'], review: ['#74B9A7', 'solid'], fix: ['#D4703C', 'solid'], blocked: ['#E0533D', 'solid'], queued: ['#B3A285', 'hollow'] }
-const NOTE_SHAPES = [
-  'M 0 0 m -3.6 0 a 3.6 2.6 -20 1 0 7.2 0 a 3.6 2.6 -20 1 0 -7.2 0 M 3.2 -0.6 V -15 Q 8 -12 9 -7 Q 7 -10 3.2 -11',
-  'M 0 0 m -3.4 0 a 3.4 2.5 -20 1 0 6.8 0 a 3.4 2.5 -20 1 0 -6.8 0 M 3 -0.5 V -14 L 15 -17 V -3.5 M 15 -3.5 m -3.4 0 a 3.4 2.5 -20 1 0 6.8 0 a 3.4 2.5 -20 1 0 -6.8 0 M 3 -11 L 15 -14',
-  'M 0 0 m -3.6 0 a 3.6 2.6 -20 1 0 7.2 0 a 3.6 2.6 -20 1 0 -7.2 0 M 3.2 -0.6 V -15',
-]
+// The stage: when a run counts as idle, when it leaves, and how the chief's face turns are timed (ms).
+const IDLE_AFTER = 5 * 60e3                                  // nobody playing and no activity this long: the run is idle
+const IDLE_LEAVE = 30 * 60e3                                 // an idle run leaves the stage after this long
+const BOW_HOLD = 4000, CLOSE_MS = 1700, FADE_MS = 550        // leave sequence: bow and hold, curtains close, stage fades, row reflows
+const COOLDOWN = 3500                                        // after turning back, joins/finishes are ignored this long
+// How long the chief faces the house for each trigger (turn included), and which trigger wins when they coincide.
+const FACE = { greet: 1900, thank: 2400, announce: 2600, bow: Infinity }
+const FACE_PRIORITY = { greet: 1, thank: 2, announce: 3, bow: 4 }
+// Ten chairs on two tiers facing the podium, listed left to right ("sweep" order). t: 0 front tier, 1 back riser.
+const SEATS = [
+  { x: 36, y: 146, t: 1 }, { x: 80, y: 200, t: 0 }, { x: 94, y: 127, t: 1 }, { x: 128, y: 184, t: 0 }, { x: 152, y: 120, t: 1 },
+  { x: 208, y: 120, t: 1 }, { x: 232, y: 184, t: 0 }, { x: 266, y: 127, t: 1 }, { x: 280, y: 200, t: 0 }, { x: 324, y: 146, t: 1 },
+].map((p, i) => ({ ...p, i }))
+const CAPACITY = 10
+// Role -> section. Order is the pipeline and the home position, left (research) to right (git).
+const ROLES = [
+  ['research', 'Research', 'clarinet', 'wind'], ['plan', 'Plan', 'trumpet', 'brass'], ['plan-review', 'Plan review', 'trumpet', 'brass'],
+  ['implement', 'Implement', 'violin', 'bow'], ['task-review', 'Task review', 'cello', 'cello'], ['review', 'Review', 'bass', 'bass'],
+  ['fix', 'Fix', 'violin', 'bow'], ['fix-check', 'Fix check', 'cello', 'cello'], ['git', 'Git', 'timpani', 'perc'],
+].map(([key, label, inst, motion], k) => ({ key, label, inst, motion, k }))
 const params = new URLSearchParams(location.search)
 let active = null, archived = null, view = 'active', filter = params.get('repo') || null
 let openKey = null, openAgent = null, openFile = null, openTranscript = null, confirmDone = false, linkedOnce = false
@@ -287,7 +460,6 @@ function dur(from, to) {
   return Math.round(s / 86400) + ' d'
 }
 const ago = (iso) => iso ? dur(iso) : ''
-const fit = (text, px, charW) => { const n = Math.max(4, Math.floor(px / charW)); text = String(text || ''); return text.length > n ? text.slice(0, n - 1) + '…' : text }
 const players = (r) => r.agents.filter((a) => a.kind !== 'chief')
 const live = (r) => players(r).filter((a) => a.status === 'running')
 const stuck = (r) => r.agents.filter((a) => ['blocked', 'failed'].includes(a.status))
@@ -357,22 +529,453 @@ function sparkline(values) {
   return `<svg viewBox="0 0 120 18" preserveAspectRatio="none" aria-hidden="true"><polygon points="0,18 ${pts} 120,18" fill="rgba(255,196,94,.14)"/>
     <polyline points="${pts}" fill="none" stroke="#FFC45E" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg>`
 }
-function notesFrom(x, y, k, color) {
-  let out = ''
-  for (let n = 0; n < 3; n++) {
-    const drift = (n % 2 ? -1 : 1) * (10 + n * 4)
-    out += `<g transform="translate(${x + n * 9} ${y})"><g class="note" style="--dx:${drift}px;animation-delay:${-(k * 0.9 + n * 1.15)}s">`
-      + `<path d="${NOTE_SHAPES[(k + n) % 3]}" fill="${color}" stroke="${color}" stroke-width="1.3" stroke-linecap="round"/></g></g>`
-  }
-  return out
+/* ---------- the stage: pure helpers (no DOM; the page tests run them in Node) ---------- */
+const ROLE_ALIASES = {
+  researcher: 'research', planner: 'plan', 'plan-reviewer': 'plan-review', implementer: 'implement', builder: 'implement',
+  'task-reviewer': 'task-review', reviewer: 'review', 'code-review': 'review', 'final-review': 'review', fixer: 'fix',
+  'fix-checker': 'fix-check', fixcheck: 'fix-check', steward: 'git', merge: 'git', commit: 'git', push: 'git',
+}
+/* The section a brief's role plays in: its label, robot, motion and place in the pipeline (k). */
+function sectionOf(role) {
+  const raw = String(role ?? '').trim()
+  const key = raw.toLowerCase().replace(/[\s_]+/g, '-')
+  const known = ROLES.find((r) => r.key === (ROLE_ALIASES[key] || key))
+  if (known) return known
+  return { key: key || 'other', label: (raw || 'other').replace(/^./, (c) => c.toUpperCase()), inst: 'clarinet', motion: 'wind', k: 4 }
+}
+const MODEL_LETTERS = { haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F', luna: 'L', sol: 'S', astra: 'A' }
+const modelLetter = (model) => MODEL_LETTERS[short(model)] || short(model).charAt(0).toUpperCase()
+/* One run as the stage sees it. The chief row is never seated; idleFor is recomputed from the clock on every poll. */
+function ensembleOf(run, nowMs) {
+  const agents = players(run).map((a) => ({ id: a.id, role: a.role, provider: a.provider, model: a.model, status: a.status }))
+  const at = ms(run.last_activity)
+  const idleFor = isFinite(at) ? Math.max(0, nowMs - at) : 0
+  const chiefState = run.phase === 'done' || run.ended ? 'done' : run.phase === 'paused' ? 'paused'
+    : agents.some((a) => a.status === 'running') ? 'working' : idleFor > IDLE_AFTER ? 'idle' : 'thinking'
+  return { id: run.key, title: run.title, phase: run.phase, chiefState, idleFor, agents }
+}
+/* Every active run that passes the checkout filter, finished ones too: Stage.render decides who gets a stage. */
+const stageList = (nowMs) => (active ? active.runs.filter((r) => !filter || r.repo === filter).map((r) => ensembleOf(r, nowMs)) : [])
+/* A stage leaves the row when its run is done or paused, or has been idle too long. */
+const isGone = (e) => e.chiefState === 'done' || e.chiefState === 'paused' || (e.chiefState === 'idle' && (e.idleFor || 0) > IDLE_LEAVE)
+/* Who sits where. seats {agentId: chair} (not mutated), reserved: chairs whose player is still walking off,
+   playing: running agents in board order. Kept players never move; a player who leaves now still holds the chair
+   while walking off. A batch into an empty pit spreads over the chairs in role order; otherwise a newcomer sits
+   beside its section, else nearest its role's home chair. Past the free chairs, newcomers wait (arrival order). */
+function seatPlan(seats, reserved, playing) {
+  const ids = new Set(playing.map((a) => a.id)), out = {}, exited = []
+  for (const id of Object.keys(seats)) { if (ids.has(id)) out[id] = seats[id]; else exited.push(id) }
+  const kept = Object.keys(out).length
+  const fresh = playing.filter((a) => !(a.id in seats))
+  const free = Math.max(0, CAPACITY - kept - reserved.length - exited.length)
+  const waiting = fresh.slice(free).map((a) => a.id)
+  const come = fresh.slice(0, free).sort((a, b) => sectionOf(a.role).k - sectionOf(b.role).k)
+  const keyOf = new Map(playing.map((a) => [a.id, sectionOf(a.role).key]))
+  const spread = !kept && !reserved.length && !exited.length && come.length > 1
+  come.forEach((a, k) => {
+    if (spread) { out[a.id] = SEATS[Math.min(CAPACITY - 1, Math.round((k + .5) * CAPACITY / come.length - .5))].i; return }
+    const taken = new Set([...Object.values(out), ...reserved, ...exited.map((id) => seats[id])])
+    const open = SEATS.filter((p) => !taken.has(p.i))
+    const key = keyOf.get(a.id), home = sectionOf(a.role).k * (CAPACITY - 1) / (ROLES.length - 1)
+    const mates = Object.keys(out).filter((id) => keyOf.get(id) === key).map((id) => out[id])
+    // next to the section if it has players, else nearest the role's home chair; ties go left, then to the back tier
+    const score = (p) => (mates.length ? Math.min(...mates.map((m) => Math.abs(m - p.i))) * 100 : 0) + Math.abs(p.i - home) * 10 + (1 - p.t)
+    out[a.id] = open.reduce((b, p) => (score(p) < score(b) ? p : b)).i
+  })
+  return { seats: out, entered: come.map((a) => a.id), exited, waiting }
+}
+/* Whether the chief turns to the house this poll: a phase change announces, a player finishing is thanked, a join is greeted. */
+function faceTrigger(prev, e) {
+  if (!prev || ['idle', 'done', 'paused'].includes(e.chiefState)) return null
+  if (e.phase !== prev.phase) return 'announce'
+  const now = new Set(e.agents.filter((a) => a.status === 'running').map((a) => a.id)), known = new Set(prev.known)
+  if (prev.known.some((id) => !now.has(id))) return 'thank'
+  if ([...now].some((id) => !known.has(id))) return 'greet'
+  return null
+}
+/* One turn at a time: a higher trigger upgrades the pose showing; in the cooldown joins/finishes are dropped, phase/done wait. */
+function faceGate({ facing, readyAt }, kind, nowMs) {
+  if (facing) return FACE_PRIORITY[kind] > FACE_PRIORITY[facing] ? 'upgrade' : 'skip'
+  if (nowMs < readyAt) return FACE_PRIORITY[kind] < 3 ? 'skip' : 'queue'
+  return 'show'
 }
 
-/* ---------- the stage ---------- */
+/* ---------- the stage: one small stage per live run ----------
+   Stage.mount(rowEl) once, then Stage.render(ensembles) on every poll. It diffs by run and agent id and writes only
+   what changed, so the robots keep playing across polls. It touches no DOM until mount. */
+const Stage = (() => {
+  const NS = 'http://www.w3.org/2000/svg'
+  const VW = 360, Y0 = -12, VH = 250, CX = 180, FY = 226, K = .32    // viewBox 0 -12 360 250 (top 40 = label lanes + notes)
+  const S = .44, CS = .46, TOP = 74                                  // robot scale, chief scale, robot height incl. badge (units)
+  const isClaude = (a) => a.provider === 'claude'
+  const NOTE_SHAPES = [
+    'M 0 0 m -3.6 0 a 3.6 2.6 -20 1 0 7.2 0 a 3.6 2.6 -20 1 0 -7.2 0 M 3.2 -0.6 V -15 Q 8 -12 9 -7 Q 7 -10 3.2 -11',
+    'M 0 0 m -3.4 0 a 3.4 2.5 -20 1 0 6.8 0 a 3.4 2.5 -20 1 0 -6.8 0 M 3 -0.5 V -14 L 15 -17 V -3.5 M 15 -3.5 m -3.4 0 a 3.4 2.5 -20 1 0 6.8 0 a 3.4 2.5 -20 1 0 -6.8 0 M 3 -11 L 15 -14',
+    'M 0 0 m -3.6 0 a 3.6 2.6 -20 1 0 7.2 0 a 3.6 2.6 -20 1 0 -7.2 0 M 3.2 -0.6 V -15',
+  ]
+
+  let row = null, T0 = 0, curtains = true, ghost = null, lastList = [], beatS = .75, sizes = null
+  const ens = new Map()
+  const reduce = () => matchMedia('(prefers-reduced-motion: reduce)').matches
+  const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e }
+  const phase = (beats) => ((performance.now() - T0) / 1000) % (beatS * beats)
+  // Writes only on change: '@name' is an attribute, anything else a property.
+  const put = (node, key, value) => {
+    if (key[0] === '@') { const k = key.slice(1), v = String(value); if (node.getAttribute(k) !== v) node.setAttribute(k, v) }
+    else if (node[key] !== value) node[key] = value
+  }
+  const flag = (node, cls, on) => { if (node.classList.contains(cls) !== on) node.classList.toggle(cls, on) }
+
+  /* ---------- drawings ---------- */
+  const ring = (r, h) => `M ${CX - r} ${FY - h} A ${r} ${r * K} 0 0 1 ${CX + r} ${FY - h} Z`
+  function shell() {
+    // two risers (back tier raised), plank floor, podium; drawn once per ensemble
+    let planks = ''
+    for (let k = -8; k <= 8; k++) planks += `<path d="M ${CX + k * 12} 96 L ${CX + k * 40} ${VH}" stroke="#000" stroke-width=".8" opacity=".2"/>`
+    return `<rect x="-40" y="96" width="${VW + 80}" height="${VH - 96}" fill="#24150A" opacity=".55"/>${planks}
+      <path d="${ring(204, 54)}" fill="url(#riserTop)"/>
+      <path d="M ${CX - 204} ${FY - 54} A 204 ${204 * K} 0 0 1 ${CX + 204} ${FY - 54}" fill="none" stroke="#8A6224" stroke-width="1.1" opacity=".55"/>
+      <path d="${ring(148, 54)}" fill="#1A0F08"/>
+      <path d="M ${CX - 148} ${FY - 54} A 148 ${148 * K} 0 0 1 ${CX + 148} ${FY - 54}" fill="none" stroke="#C9993C" stroke-width="1" opacity=".45"/>
+      <path d="${ring(148, 8)}" fill="url(#riserTop)" opacity=".9"/>
+      <path d="M ${CX - 148} ${FY - 8} A 148 ${148 * K} 0 0 1 ${CX + 148} ${FY - 8}" fill="none" stroke="#8A6224" stroke-width="1" opacity=".5"/>`
+  }
+  function arm(d, hand) {
+    return `<path d="${d}" fill="none" stroke="#150C05" stroke-width="9.6" stroke-linecap="round" stroke-linejoin="round"/>`
+      + `<path d="${d}" fill="none" stroke="#B8892F" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>`
+      + `<path d="${d}" fill="none" stroke="#F0CB7A" stroke-width="1.5" stroke-linecap="round" opacity=".5"/>` + hand
+  }
+  const joint = (x, y, r = 4, f = '#8A6224') => `<circle cx="${x}" cy="${y}" r="${r}" fill="${f}" stroke="#150C05" stroke-width="1.2"/>`
+  function chiefBack() {
+    // The chief from behind (facing the players): brass dome, tailcoat, jointed brass arms, cream baton, a score for study mode.
+    const head = 'M -26 -136 L -26 -158 A 26 26 0 0 1 26 -158 L 26 -136 Q 0 -131 -26 -136 Z'
+    const coat = 'M -23 -60 L -27 -118 Q -27 -130 -14 -130 L 14 -130 Q 27 -130 27 -118 L 23 -60 Z'
+    const score = `<g class="c-score"><path d="M -62 -172 L -80 -176 L -80 -150 L -62 -146 Z" fill="#D9C79A" stroke="#4A3212" stroke-width="1"/>
+      <path d="M -62 -172 L -44 -176 L -44 -150 L -62 -146 Z" fill="#9E8A5E" stroke="#4A3212" stroke-width="1"/>
+      <path class="c-page" d="M -62 -172 L -45 -175.5 L -45 -150.5 L -62 -147 Z" fill="#EFE4CF" stroke="#4A3212" stroke-width=".9"/>
+      <path d="M -77 -168 H -66 M -77 -163 H -66 M -77 -158 H -66" stroke="#4A3212" stroke-width=".8" opacity=".6"/></g>`
+    return `<g class="c-body">
+      <path d="M -9 -62 V 0 M 9 -62 V 0" stroke="#1C120A" stroke-width="12" stroke-linecap="round"/>
+      <ellipse cx="-10" cy="0" rx="10" ry="3.6" fill="#0E0805" stroke="#B88A34" stroke-width=".9"/><ellipse cx="10" cy="0" rx="10" ry="3.6" fill="#0E0805" stroke="#B88A34" stroke-width=".9"/>
+      <path d="M -22 -70 L -26 -30 L -6 -58 Z M 22 -70 L 26 -30 L 6 -58 Z" fill="#120B06" stroke="#6B4A1C" stroke-width="1"/>
+      <path d="${coat}" fill="url(#cloth)" stroke="#6B4A1C" stroke-width="1.4"/>
+      <path d="${coat}" fill="url(#hatch)" mask="url(#shade)"/>
+      <path d="M 0 -128 V -62" stroke="#000" stroke-width="1.2" opacity=".7"/>
+      <path d="M -18 -96 H 18" stroke="#6B4A1C" stroke-width="1" opacity=".6"/>
+      <rect x="-6" y="-141" width="12" height="11" fill="#4F3714" stroke="#2E1F0C" stroke-width=".9"/>
+      <g class="c-head">
+        <path d="${head}" fill="url(#dome)" stroke="#150C05" stroke-width="1.9"/>
+        <path d="${head}" fill="url(#hatch)" mask="url(#shade)"/>
+        <path d="${head}" fill="url(#hatchB)" mask="url(#shadeDeep)"/>
+        <path d="M -26 -141 Q 0 -136 26 -141" fill="none" stroke="#3B2811" stroke-width="1.1"/>
+        <path d="M -14 -170 H 14 M -16 -162 H 16 M -17 -154 H 17" stroke="#3B2811" stroke-width="1.2" opacity=".55"/>
+        <circle cx="-27" cy="-152" r="4.2" fill="#C9993C" stroke="#150C05" stroke-width="1.2"/><circle cx="27" cy="-152" r="4.2" fill="#C9993C" stroke="#150C05" stroke-width="1.2"/>
+        <ellipse cx="-9" cy="-178" rx="8" ry="3" fill="#FFF3D0" opacity=".25" transform="rotate(-20 -9 -178)"/>
+      </g></g>
+      <g class="c-arm-l">${arm('M -24 -122 L -48 -132 L -62 -156', joint(-24, -122) + joint(-48, -132) + joint(-62, -156, 4.8, '#D9AB52'))}${score}</g>
+      <g class="c-arm-r">${arm('M 24 -122 L 50 -134', joint(24, -122) + joint(50, -134))}
+        <g class="c-fore-r">${arm('M 50 -134 L 66 -160', '')}<path d="M 66 -160 L 104 -206" stroke="#EFE4CF" stroke-width="2.4" stroke-linecap="round"/><circle cx="104" cy="-206" r="1.8" fill="#FFF3D0"/>${joint(66, -160, 4.8, '#D9AB52')}</g>
+      </g>`
+  }
+  function chiefFront() {
+    // The chief facing the house: r-chief-legs + r-chief-torso (cut from r-conductor) and arms that can move.
+    return `<use href="#r-chief-legs" x="-90" y="-200" width="180" height="210"/>
+      <g class="f-torso"><use href="#r-chief-torso" x="-90" y="-200" width="180" height="210"/>
+        <g class="f-arm-o">${arm('M 24 -120 L 42 -98', joint(24, -120))}<g class="f-fore-o">${arm('M 42 -98 L 22 -82', joint(42, -98) + joint(22, -82, 4.6, '#D9AB52'))}</g></g>
+        <g class="f-arm-b">${arm('M -22 -122 L -50 -138 L -64 -170', joint(-22, -122) + joint(-50, -138))}<path d="M -64 -170 L -108 -214" stroke="#EFE4CF" stroke-width="2.4" stroke-linecap="round"/><circle cx="-108" cy="-214" r="1.8" fill="#FFF3D0"/>${joint(-64, -170, 4.6, '#D9AB52')}</g>
+      </g>`
+  }
+  function timpani() {
+    return `<g transform="translate(0 -6)">
+      <path d="M -50 -62 Q -46 -18 0 -14 Q 46 -18 50 -62 Z" fill="url(#woodgrad)" stroke="#150C05" stroke-width="2"/>
+      <path d="M -50 -62 Q -46 -18 0 -14 Q 46 -18 50 -62 Z" fill="url(#hatch)" mask="url(#shade)"/>
+      <path d="M -30 -20 L -40 6 M 30 -20 L 40 6 M 0 -14 V 6" stroke="#8A6224" stroke-width="3" stroke-linecap="round"/>
+      <ellipse cx="0" cy="-62" rx="50" ry="11" fill="url(#paper)" stroke="#C9993C" stroke-width="2.4"/>
+      <path d="M -26 -104 L -10 -68 M 26 -104 L 10 -68" stroke="#EFE4CF" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="-10" cy="-68" r="4.5" fill="#EFE4CF" stroke="#150C05"/><circle cx="10" cy="-68" r="4.5" fill="#EFE4CF" stroke="#150C05"/></g>`
+  }
+
+  /* ---------- one ensemble ---------- */
+  const PODIUM = `<g class="podium"><path d="M 146 228 L 214 228 L 220 222 L 140 222 Z" fill="#3A2514" stroke="#150C05" stroke-width="1"/>
+        <rect x="146" y="228" width="68" height="10" fill="url(#podiumFace)" stroke="#150C05" stroke-width="1"/><path d="M 146 228 H 214" stroke="#C9993C" stroke-width=".8" opacity=".7"/></g>`
+  const FRAME = (plate) => `<div class="arch"><i class="val"></i>${plate}</div>
+      <div class="proc"><div class="pit"><svg viewBox="0 ${Y0} ${VW} ${VH}" role="img"></svg><div class="roles"></div><i class="cur l"></i><i class="cur r"></i></div><i class="dr l"></i><i class="dr r"></i></div>
+      <div class="apron"></div>`
+  function build(e) {
+    const root = document.createElement('article')
+    root.className = 'ens'
+    root.style.setProperty('--sway-d', `-${((ens.size * 1.7) % 6).toFixed(1)}s`)
+    root.innerHTML = FRAME(`<header class="plate" tabindex="0" role="button" data-run="${esc(e.id)}"><span class="lamp"></span><h3></h3><span class="over" hidden></span><p class="meta"></p></header>`)
+    const svg = root.querySelector('svg')
+    svg.innerHTML = `${shell()}<ellipse class="pool" cx="${CX}" cy="150" rx="190" ry="78" fill="url(#poolG)"/>
+      <g class="t1"></g><g class="t0"></g>
+      ${PODIUM}
+      <g class="chief rest" transform="translate(${CX} ${FY - 2}) scale(${CS})"><g class="turn"><g class="c-back">${chiefBack()}</g><g class="c-front f-rest" style="display:none">${chiefFront()}</g></g></g>
+      <g class="notes"></g>
+      <rect class="house" x="-40" y="${Y0}" width="${VW + 80}" height="${VH + 10}" fill="#000" opacity=".4"/>`
+    const st = {
+      id: e.id, root, svg, plate: root.querySelector('.plate'), h3: root.querySelector('h3'), meta: root.querySelector('.meta'), roles: root.querySelector('.roles'), over: root.querySelector('.over'),
+      chief: svg.querySelector('.chief'), turn: svg.querySelector('.turn'), back: svg.querySelector('.c-back'), front: svg.querySelector('.c-front'),
+      pool: svg.querySelector('.pool'), house: svg.querySelector('.house'),
+      seatOf: new Map(), nodes: new Map(), releasing: new Set(), known: new Set(), view: 'back', facing: null, readyAt: 0, timer: 0, qt: 0,
+      phase: e.phase, first: true, last: e, leaving: false, px: 300 / VW, metaHtml: null, labelsHtml: null,
+    }
+    svg.__stage = st
+    sizes.observe(svg)
+    return st
+  }
+
+  function makeSeat(st, a, seat) {
+    const r = sectionOf(a.role), gpt = !isClaude(a)
+    const g = el('g', { class: 'seat', transform: `translate(${seat.x} ${seat.y})`, tabindex: 0, role: 'img', 'data-y': seat.y, 'data-run': st.id })
+    el('title', {}, g).textContent = `${r.label} · ${gpt ? 'ChatGPT' : 'Claude'} ${a.model} · ${a.id}`
+    const walk = el('g', { class: 'walk' }, g)
+    el('ellipse', { class: 'halo', cx: 0, cy: -1, rx: 52 * S, ry: 11 * S, fill: gpt ? 'url(#haloG)' : 'url(#haloC)', opacity: .35 }, walk)
+    const body = el('g', { transform: `scale(${S})` }, walk)
+    const mot = el('g', { class: `mot m-${r.motion}` }, body)
+    mot.style.animationDelay = `${-phase(4)}s`                                     // phase-lock to the bar
+    el('use', { href: `#r-${r.inst === 'timpani' ? 'clarinet' : r.inst}`, x: -80, y: -200, width: 160, height: 200, class: gpt ? 'patina' : '' }, mot)
+    if (r.inst === 'timpani') mot.insertAdjacentHTML('beforeend', timpani())
+    const col = gpt ? '#74B9A7' : '#D4703C'
+    const badge = el('g', { transform: `translate(${(30 * S).toFixed(1)} ${(-150 * S).toFixed(1)})` }, walk)
+    el('circle', { r: 7.5, fill: '#140D08', stroke: col, 'stroke-width': 1.3 }, badge)
+    el('text', { y: 3.6, 'text-anchor': 'middle', 'font-family': 'IBM Plex Mono, Menlo, monospace', 'font-size': 10, 'font-weight': 600, fill: col }, badge).textContent = modelLetter(a.model)
+    const layer = st.svg.querySelector('.t' + seat.t)
+    const after = [...layer.children].find((c) => +c.getAttribute('data-y') > seat.y)
+    layer.insertBefore(g, after || null)
+    return g
+  }
+
+  const wingX = (x) => (x < CX ? -40 : VW + 40)
+  function enter(g, seat, k) {
+    if (reduce()) return
+    const dx = wingX(seat.x) - seat.x, walk = g.querySelector('.walk'), steps = []
+    for (let i = 0; i <= 8; i++) { const u = i / 8, e = 1 - Math.pow(1 - u, 2); steps.push({ offset: u, transform: `translate(${(dx * (1 - e)).toFixed(1)}px, ${i % 2 && i < 8 ? -3 : 0}px)`, opacity: Math.min(1, u * 4) }) }
+    walk.animate(steps, { duration: 900 + Math.abs(dx) * 4, delay: Math.min(k * 90, 900), easing: 'linear', fill: 'backwards' })
+  }
+  function exit(st, g, i) {
+    st.releasing.add(i)
+    let over = false
+    // the freed chair seats a waiting player straight away; never re-entered from inside update
+    const done = () => { if (over) return; over = true; g.remove(); st.releasing.delete(i); if (!st.leaving && ens.get(st.id) === st) update(st, st.last) }
+    if (reduce()) { setTimeout(done, 0); return }
+    const x = SEATS[i].x, dx = wingX(x) - x, walk = g.querySelector('.walk'), dur = 1500 + Math.abs(dx) * 3
+    const pop = el('path', { d: NOTE_SHAPES[0], fill: '#FFD27A' }, g)
+    pop.animate([{ transform: 'translate(0px,-50px) scale(.4)', opacity: 0 }, { transform: 'translate(0px,-62px) scale(1.3)', opacity: 1, offset: .3 }, { transform: 'translate(6px,-86px) scale(1)', opacity: 0 }], { duration: 1300, easing: 'ease-out', fill: 'forwards' })
+    walk.animate([
+      { transform: 'none', opacity: 1 },
+      { transform: 'translateY(3px) scaleY(.88)', opacity: 1, offset: .18 },              // the player's bow
+      { transform: 'none', opacity: 1, offset: .34 },
+      { transform: `translate(${(dx * .4).toFixed(1)}px, -3px)`, opacity: 1, offset: .6 },
+      { transform: `translate(${dx.toFixed(1)}px, 0px)`, opacity: 0 },
+    ], { duration: dur, easing: 'ease-in', fill: 'forwards' })
+    setTimeout(done, dur + 100)                                                        // timer, not onfinish: hidden tabs pause animations
+  }
+
+  /* ---------- the chief: back/front turn and poses ---------- */
+  function turnTo(st, view) {
+    if (st.view === view) return
+    st.view = view
+    const swap = () => { st.back.style.display = view === 'back' ? '' : 'none'; st.front.style.display = view === 'front' ? '' : 'none' }
+    if (reduce()) return swap()
+    st.turn.animate([{ transform: 'scaleX(1)' }, { transform: 'scaleX(.06) translateY(-2px)' }], { duration: 170, easing: 'ease-in' })
+    setTimeout(() => { swap(); st.turn.animate([{ transform: 'scaleX(.06) translateY(-2px)' }, { transform: 'scaleX(1)' }], { duration: 230, easing: 'ease-out' }) }, 165)
+  }
+  function pose(st, kind, side) {
+    st.facing = kind
+    st.front.setAttribute('class', 'c-front f-rest')                                // reset so the CSS animation restarts
+    void st.front.getBBox()
+    st.front.setAttribute('class', `c-front f-${kind}${side ? ' to-' + side : ''}`)
+    clearTimeout(st.timer)
+    if (FACE[kind] === Infinity) return                                             // the bow at done: stays facing the house
+    st.timer = setTimeout(() => { st.facing = null; st.readyAt = performance.now() + COOLDOWN; turnTo(st, 'back') }, FACE[kind])
+  }
+  function face(st, kind, side) {
+    const gate = faceGate(st, kind, performance.now())
+    if (gate === 'skip') return
+    if (gate === 'upgrade') return pose(st, kind, side)                            // upgrade the pose already showing
+    if (gate === 'queue') { clearTimeout(st.qt); st.qt = setTimeout(() => face(st, kind, side), st.readyAt - performance.now()); return }
+    turnTo(st, 'front'); setTimeout(() => pose(st, kind, side), reduce() ? 0 : 170)
+  }
+
+  /* ---------- notes: on fixed beats of an 8-beat phrase ---------- */
+  function emit(st) {
+    const box = st.svg.querySelector('.notes'), occ = [...st.seatOf.values()].map((v) => ({ p: SEATS[v.i], gpt: v.gpt })).sort((a, b) => a.p.i - b.p.i)
+    const want = Math.min(3, occ.length), sig = occ.map((o) => o.p.i).join(',')
+    if (box.dataset.sig === sig) return
+    box.dataset.sig = sig
+    box.innerHTML = ''
+    const ph = phase(8)
+    for (let k = 0; k < want; k++) {
+      const o = occ[Math.round(k * (occ.length - 1) / Math.max(want - 1, 1))], color = o.gpt ? '#9FD4C5' : '#FFD27A'
+      const outer = el('g', { transform: `translate(${o.p.x - 4} ${o.p.y - TOP})` }, box)
+      const n = el('g', { class: 'note' }, outer)
+      n.style.setProperty('--dx', `${(k % 2 ? -1 : 1) * (8 + k * 3)}px`)
+      n.style.animationDelay = `${[0, 3, 5][k] * beatS - ph}s`
+      el('path', { d: NOTE_SHAPES[k % 3], fill: color, stroke: color, 'stroke-width': 1.3, 'stroke-linecap': 'round', transform: 'scale(.8)' }, n)
+    }
+  }
+
+  /* ---------- role labels: one per contiguous section, above the back tier or under the front tier ---------- */
+  function labels(st) {
+    const seated = [...st.seatOf.values()].sort((a, b) => a.i - b.i), groups = []
+    seated.forEach((v) => { const g = groups[groups.length - 1]; if (g && g.key === v.key) g.seats.push(v); else groups.push({ key: v.key, label: v.label, seats: [v] }) })
+    const px = st.px, placed = []                                                   // pixels per viewBox unit, from the ResizeObserver
+    const html = groups.map((g) => {
+      const ps = g.seats.map((v) => SEATS[v.i]), back = ps.filter((p) => p.t === 1)
+      let x = ps.reduce((s, p) => s + p.x, 0) / ps.length
+      const up = back.length > 0
+      const text = g.label + (g.seats.length > 1 ? ' ' + g.seats.length : ''), w = (text.length * 6.4 + 16) / px, h = 18 / px
+      let y = up ? Math.min(...back.map((p) => p.y)) - TOP - (h / 2 + 2 / px) : Math.max(...ps.map((p) => p.y)) + h / 2 + 1 / px
+      x = Math.min(Math.max(x, w / 2 + 2), VW - w / 2 - 2)
+      const hit = () => placed.find((q) => Math.abs(q.x - x) < (q.w + w) / 2 + 3 / px && Math.abs(q.y - y) < h)
+      let q = hit()                                                                  // touching pills: slide right if there is room, else stack
+      if (q && q.x + (q.w + w) / 2 + 3 / px + w / 2 <= VW - 2) { x = q.x + (q.w + w) / 2 + 3 / px; q = hit() }
+      while (q) { y += up ? -h : h; q = hit() }
+      placed.push({ x, y, w })
+      const gpt = g.seats.filter((v) => v.gpt).length > g.seats.length / 2
+      return `<span class="role${gpt ? ' gpt' : ''}" style="left:${(x / VW * 100).toFixed(2)}%;top:${((y - Y0) / VH * 100).toFixed(2)}%">${esc(text)}</span>`
+    }).join('')
+    if (html !== st.labelsHtml) { st.labelsHtml = html; st.roles.innerHTML = html }
+  }
+
+  /* ---------- render one ensemble ---------- */
+  function update(st, e) {
+    st.last = e
+    const playing = e.agents.filter((a) => a.status === 'running'), byId = new Map(playing.map((a) => [a.id, a]))
+    const plan = seatPlan(Object.fromEntries([...st.seatOf].map(([id, v]) => [id, v.i])), [...st.releasing], playing)
+    let finishedSide = null
+    plan.exited.forEach((id) => {
+      const v = st.seatOf.get(id), g = st.nodes.get(id)
+      st.nodes.delete(id); st.seatOf.delete(id)
+      finishedSide = finishedSide || (SEATS[v.i].x < CX ? 'l' : 'r')
+      exit(st, g, v.i)
+    })
+    plan.entered.forEach((id, k) => {
+      const a = byId.get(id), seat = SEATS[plan.seats[id]], r = sectionOf(a.role)
+      st.seatOf.set(id, { i: seat.i, key: r.key, label: r.label, gpt: !isClaude(a) })
+      const g = makeSeat(st, a, seat)
+      st.nodes.set(id, g)
+      enter(g, seat, k)
+    })
+    const waiting = plan.waiting.map((id) => byId.get(id))
+    const seated = st.nodes.size
+    // chief mode from the lifecycle: thinking (nobody seated) -> study, working (somebody seated) -> conduct, idle -> rest, done/paused -> front view (bow)
+    const idle = e.chiefState === 'idle', bye = e.chiefState === 'done' || e.chiefState === 'paused'
+    const mode = bye ? 'done' : idle ? 'rest' : seated ? 'conduct' : 'study'
+    put(st.chief, '@class', 'chief ' + mode)
+    const trigger = faceTrigger(st.first ? null : { phase: st.phase, known: [...st.known] }, e)
+    if (trigger) face(st, trigger, trigger === 'thank' ? finishedSide : null)
+    st.known = new Set(playing.map((a) => a.id))
+    st.first = false
+    st.phase = e.phase
+    // plate, lights, overflow chip, labels, notes
+    const lit = !idle && !bye
+    flag(st.root, 'dim', !lit)
+    flag(st.root, 'idle', idle)                                                      // curtains partly drawn
+    const title = String(e.title ?? '')
+    put(st.h3, 'textContent', title)
+    put(st.h3, 'title', title)
+    put(st.plate, '@aria-label', 'Open ' + title)
+    const ph = e.phase ? esc(e.phase) + ' · ' : ''
+    const meta = e.chiefState === 'done' ? `done · curtain call` : e.chiefState === 'paused' ? `paused · curtain call` : idle ? `${ph}idle · chief resting`
+      : seated ? `${ph}<b>${playing.length}</b> playing${waiting.length ? ` · ${waiting.length} waiting` : ''}` : `${ph}thinking · chief reads the score`
+    if (meta !== st.metaHtml) { st.metaHtml = meta; st.meta.innerHTML = meta }
+    put(st.svg, '@aria-label', `${title}: ${playing.length} playing`)
+    flag(st.pool, 'on', lit && seated > 0)
+    put(st.house, '@opacity', lit ? (seated ? 0 : .12) : .42)
+    put(st.over, 'hidden', !waiting.length)
+    put(st.over, 'textContent', '+' + waiting.length)
+    put(st.over, 'title', `${waiting.length} waiting for a chair: ` + waiting.map((a) => sectionOf(a.role).label).join(', '))
+    labels(st)
+    emit(st)
+  }
+
+  /* ---------- lifecycle: appear, idle, bow, close, leave, reflow ---------- */
+  // FLIP: remember where every stage is, change the DOM, then slide the survivors from their old place.
+  // Translate only (a scale would stretch the plate text); every rect is read before the change and once after.
+  function flip(mutate) {
+    if (reduce()) return mutate()
+    const kids = [...row.children], was = kids.map((c) => c.getBoundingClientRect().left)
+    mutate()
+    const moves = kids.map((c, k) => [c, c.isConnected && c.parentNode === row ? was[k] - c.getBoundingClientRect().left : 0])
+    for (const [c, dx] of moves) if (Math.abs(dx) >= 1) c.animate([{ transform: `translateX(${dx.toFixed(1)}px)` }, { transform: 'none' }], { duration: 650, easing: 'cubic-bezier(.3,.1,.2,1)' })
+  }
+  function bow(st) {                                                               // chief turns to the house and bows, then stays front
+    clearTimeout(st.timer); clearTimeout(st.qt)
+    st.facing = 'bow'; turnTo(st, 'front')
+    setTimeout(() => pose(st, 'bow'), reduce() ? 0 : 170)
+  }
+  function leave(st, withBow) {
+    if (st.leaving) return
+    st.leaving = true
+    const R = reduce(), t1 = R ? 0 : (withBow ? BOW_HOLD : 300)                   // 1. bow, hold  2. curtains close  3. fade  4. remove + reflow
+    if (withBow) bow(st)
+    setTimeout(() => { st.root.classList.remove('idle', 'closed'); st.root.classList.add('closing') }, t1)
+    setTimeout(() => st.root.classList.add('leaving'), t1 + (R ? 0 : CLOSE_MS))
+    setTimeout(() => flip(() => {
+      clearTimeout(st.timer); clearTimeout(st.qt); sizes.unobserve(st.svg); st.root.remove(); ens.delete(st.id)
+      reconcile(lastList)                                                          // a run that came back meanwhile gets a fresh stage; none left -> placeholder
+    }), t1 + (R ? 0 : CLOSE_MS + FADE_MS))
+  }
+  function opening(st, k) {                                                        // curtains closed, then open (staggered when several appear at once)
+    st.root.classList.add('closed')
+    st.root.style.setProperty('--open-d', `${(.25 + k * .3).toFixed(2)}s`)
+    setTimeout(() => st.root.classList.remove('closed'), 60)
+  }
+  function buildGhost() {
+    const root = document.createElement('article')
+    root.className = 'ens ghost dim'
+    root.setAttribute('aria-label', 'No live runs')
+    root.innerHTML = FRAME('<header class="plate"><span class="lamp"></span><h3>No live runs</h3><p class="meta">the curtain opens when a run starts</p></header>')
+    root.querySelector('svg').innerHTML = `${shell()}${PODIUM}<rect x="-40" y="${Y0}" width="${VW + 80}" height="${VH + 10}" fill="#000" opacity=".3"/>`
+    return root
+  }
+  function mount(target, opts = {}) {
+    row = target
+    curtains = opts.curtains !== false
+    T0 = performance.now()
+    beatS = parseFloat(getComputedStyle(row).getPropertyValue('--beat')) || .75
+    sizes = new ResizeObserver((entries) => entries.forEach((en) => {
+      const st = en.target.__stage
+      if (!st || !en.contentRect.width) return
+      st.px = en.contentRect.width / VW
+      labels(st)
+    }))
+  }
+  function reconcile(list) {
+    const wanted = [], seen = new Set()
+    let fresh = 0
+    list.forEach((e) => {
+      let st = ens.get(e.id)
+      const gone = isGone(e)
+      if (!st && gone) return                                                      // runs that are over never get a stage
+      seen.add(e.id)
+      if (!st) { st = build(e); ens.set(e.id, st); if (curtains && !reduce()) opening(st, fresh++) }
+      wanted.push(st)
+      if (st.leaving) return
+      update(st, e)
+      if (gone) leave(st, e.chiefState !== 'idle')                                 // done/paused bow; a stale idle stage just draws its curtains
+    })
+    for (const [id, st] of ens) if (!seen.has(id)) { wanted.push(st); leave(st, false) }
+    if (wanted.length) { if (ghost && ghost.isConnected) ghost.remove() }
+    else { ghost = ghost || buildGhost(); if (!ghost.isConnected) row.appendChild(ghost) }
+    wanted.forEach((st, k) => { if (row.children[k] !== st.root) row.insertBefore(st.root, row.children[k] || null) })
+  }
+  function render(list) {
+    if (!row) return
+    lastList = list
+    flip(() => reconcile(list))
+  }
+  return { mount, render, mounted: () => row !== null }
+})()
+
+/* ---------- the stage header ---------- */
 function renderStage() {
   if (!active) return
   const runs = active.runs.filter((r) => !filter || r.repo === filter)
-  const ensembles = runs.filter((r) => !['done', 'paused'].includes(r.phase) && !r.quiet)
-  const all = ensembles.flatMap(live)
+  const ensembles = stageList(Date.now()).filter((e) => !isGone(e))
+  const all = ensembles.flatMap((e) => e.agents.filter((a) => a.status === 'running'))
   const waiting = runs.flatMap(stuck).length
   const repos = new Set(active.runs.map((r) => r.repo)).size
   $('where').textContent = `${repos} checkout${repos === 1 ? '' : 's'} · ${active.runs.length} run${active.runs.length === 1 ? '' : 's'}`
@@ -389,55 +992,13 @@ function renderStage() {
     <div><span class="label">burn rate</span><span class="v">${money(spend.burn_per_hour)}<small>/ h</small></span><span class="mix">last 60 min</span></div>`
   const accounts = active.accounts || {}
   $('meters').innerHTML = meter('Claude', accounts.claude, '#D4703C') + meter('ChatGPT', accounts.chatgpt, '#74B9A7')
-
-  // Ensembles share a row while robots stay at least MIN_UNIT wide; past that they wrap onto another row.
-  const W = 1200, GAP = 0.45, MIN_UNIT = 104, MAX_UNIT = 126
-  const width = (r) => 1.25 + Math.max(live(r).length, 1)
-  const rowSlots = (row) => row.reduce((n, r) => n + width(r), 0) + GAP * Math.max(row.length - 1, 0)
-  const rows = []
-  ensembles.forEach((r) => { const last = rows[rows.length - 1]; if (last && rowSlots([...last, r]) * MIN_UNIT <= W - 40) last.push(r); else rows.push([r]) })
-  const unit = Math.min(MAX_UNIT, ...rows.map((row) => (W - 40) / Math.max(rowSlots(row), 1)))
-  const s = Math.min(0.72, unit / 175)
-  const floorOff = Math.round(130 + 150 * s), rowH = floorOff + 42
-  let out = `<defs><linearGradient id="slipG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#21160D"/><stop offset="1" stop-color="#1D130B"/></linearGradient></defs>`
-  rows.forEach((row, ri) => {
-    const top = ri * rowH, floor = top + floorOff
-    out += `<rect x="0" y="${floor - 6}" width="${W}" height="${rowH - floorOff + 6}" fill="#0B0705"/><path d="M 0 ${floor - 6} H ${W}" stroke="#6B4A1C" stroke-width="1.5"/>`
-    let x = Math.max(20, (W - rowSlots(row) * unit) / 2) + unit * 0.55
-    row.forEach((r) => {
-      const group0 = x - unit * 0.55, L = live(r)
-      let g = `<use href="#podium" x="${x - 52 * s}" y="${floor - 44 * s}" width="${104 * s}" height="${44 * s}"/>`
-      g += `<g transform="translate(${x} ${floor - 44 * s}) scale(${s * 0.78})"><g class="${L.length ? 'lead' : ''}"><use href="#r-conductor" x="-90" y="-200" width="180" height="210"/></g></g>`
-      x += unit * 1.25
-      L.forEach((a, k) => {
-        const kind = instrument(a)
-        const tempo = { trumpet: 1.6, clarinet: 2.1, violin: 2.4, cello: 3, bass: 3.4 }[kind]
-        g += `<circle class="glow" style="animation-delay:${-k * 1.3}s" cx="${x + 9 * s}" cy="${floor - 86 * s}" r="${72 * s}" fill="url(#lamp)" opacity=".9"/>`
-        g += `<g transform="translate(${x} ${floor - 46 * s}) scale(${s})"><g class="play" style="animation-duration:${tempo}s;animation-delay:${-k * 0.7}s">`
-          + `<use href="#r-${kind}" x="-80" y="-150" width="160" height="200" class="${a.provider === 'chatgpt' ? 'patina' : ''}"/></g></g>`
-        g += notesFrom(x - 18 * s, floor - 150 * s, k, a.provider === 'chatgpt' ? '#9FD4C5' : '#FFD27A')
-        const cap = `${a.role}${a.task !== '-' ? ' T' + a.task : ''} · ${short(a.model)}`
-        g += `<text x="${x}" y="${floor + 18}" text-anchor="middle" fill="${a.provider === 'claude' ? '#D4703C' : '#74B9A7'}" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="500">${esc(fit(cap, unit - 6, 7))}</text>`
-        g += `<text x="${x}" y="${floor + 32}" text-anchor="middle" fill="#B3A285" font-family="IBM Plex Mono, monospace" font-size="11">${esc(fit((a.acts && a.acts[0] || ['', a.description || ''])[1], unit - 6, 6.7))}</text>`
-        x += unit
-      })
-      if (!L.length) { g += `<text x="${x}" y="${floor - 30}" text-anchor="middle" fill="#B3A285" font-family="Instrument Serif, serif" font-style="italic" font-size="18">chief thinking</text>`; x += unit }
-      const group1 = x - unit * 0.5, plateW = group1 - group0 - 8, mid = (group0 + group1) / 2
-      const detail = `${repoName(r.repo)} · ${L.length} playing · ${dur(r.started, r.ended)}`
-      g += `<g class="plate"><rect x="${group0 + 4}" y="${top + 12}" width="${plateW}" height="52" rx="13" fill="url(#slipG)" stroke="rgba(228,176,74,.22)" stroke-width="1.5"/>`
-      g += `<text x="${mid}" y="${top + 36}" text-anchor="middle" fill="#EFE4CF" font-family="Instrument Serif, Georgia, serif" font-size="20">${esc(fit(r.title, plateW - 20, 8.6))}</text>`
-      g += `<text x="${mid}" y="${top + 54}" text-anchor="middle" fill="#B3A285" font-family="IBM Plex Mono, monospace" font-size="11.5">${esc(fit(detail, plateW - 20, 6.9))}</text></g>`
-      out += `<g class="player" data-run="${esc(r.key)}" tabindex="0" role="button" aria-label="Open ${esc(r.title)}">${g}</g>`
-      x += unit * GAP
-    })
-  })
-  let height = rows.length * rowH
-  if (!ensembles.length) {
-    height = 120
-    out += `<text x="600" y="62" text-anchor="middle" fill="#B3A285" font-family="Instrument Serif, serif" font-size="24" font-style="italic">No run is playing. The next chief run lights the stage.</text>`
-  }
-  $('scene').setAttribute('viewBox', `0 0 ${W} ${height}`)
-  $('scene').innerHTML = out
+  stageTick()
+}
+/* Moves the stages on: called once per poll (from renderStage when the board changed, from poll when it did not), so
+   idle, leaving after IDLE_LEAVE and coming back happen on an unchanged board too. Adds no timer. */
+function stageTick(nowMs = Date.now()) {
+  if (!Stage.mounted() && typeof ResizeObserver === 'function') Stage.mount($('stage-row'), { curtains: true })
+  Stage.render(stageList(nowMs))
 }
 
 /* ---------- toolbar, notices, programme ---------- */
@@ -741,7 +1302,7 @@ document.addEventListener('click', async (e) => {
 })
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeScore()
-  if (e.key === 'Enter' && e.target.matches('[data-agent], .player')) e.target.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  if (e.key === 'Enter' && e.target.matches('[data-agent], [data-run][tabindex]')) e.target.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 })
 $('curtain').addEventListener('click', closeScore)
 
@@ -815,6 +1376,7 @@ async function poll() {
     }
     renderStatus()
     tickCache()  // before the early return below, so an unchanged board still gets fresh minutes
+    if (!changed) stageTick()  // a changed board gets its tick from renderStage below
     const linked = params.get('run'), linkPending = linked && !linkedOnce
     if (!changed && !pendingScore && !linkPending) { if (openKey && !openFile && !openTranscript) renderScore(); return }
     if (changed) { renderStage(); renderBar(); renderProgramme() }
