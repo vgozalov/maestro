@@ -172,7 +172,7 @@ def git_toplevel(cwd="."):
 # ---- starting a run and moving its phase ---------------------------------------------------
 
 
-def start_run(repo, text, title=None, source="chat", now=None):
+def start_run(repo, text, title=None, source="chat", now=None, session_id=None):
     if not text or not text.strip():
         raise ValueError("the task is empty: pass the request on stdin, with --file or with --issue")
     title = (title or text.strip().splitlines()[0]).strip()[:120]
@@ -198,6 +198,7 @@ def start_run(repo, text, title=None, source="chat", now=None):
     write_json(os.path.join(run_dir, "run.json"), {
         "id": run_id, "title": title, "source": source, "repo": repo, "started": started, "ended": None,
         "phase": "intake", "plan": None, "workspace": None,
+        "session_id": session_id or os.environ.get("CLAUDE_CODE_SESSION_ID") or None,
         "phases": [{"phase": "intake", "at": started, "usage": usage_snapshot()}],
     })
     try:
@@ -245,6 +246,8 @@ def set_phase(run_dir, phase, plan=None, workspace=None):
     state = load_run(run_dir)
     at = now_iso()
     state["phase"] = phase
+    if not state.get("session_id"):  # a run from before the id was recorded learns it at its next phase
+        state["session_id"] = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
     state["phases"].append({"phase": phase, "at": at, "usage": usage_snapshot()})
     if plan:
         state["plan"] = plan
@@ -319,6 +322,7 @@ def price_codex(model, usage, prices):
 
 _TRANSCRIPTS = {}
 _SESSIONS = {}
+SESSION_ID = re.compile(r"^[A-Za-z0-9-]{1,80}$")
 
 
 def prompt_text(entry):
@@ -479,7 +483,9 @@ def claude_agents(config_dir, runs, prices):
                     "description": parsed["description"], "status": status, "started": parsed["started"],
                     "ended": parsed["ended"], "tokens": parsed["tokens"], "cost_usd": parsed["cost_usd"],
                     "report": parsed["report"], "verdict": verdict, "acts": parsed["acts"], "active": mtime,
-                    "context": parsed["context"], "_spend": parsed["spend"]})
+                    "context": parsed["context"], "_spend": parsed["spend"],
+                    "session_id": os.path.basename(os.path.dirname(os.path.dirname(path))),
+                    "agent_id": os.path.basename(path)[len("agent-"): -len(".jsonl")], "_transcript": path})
                 break
     for run in runs:
         chief = chief_session(config_dir, run, prices, since)
@@ -489,38 +495,99 @@ def claude_agents(config_dir, runs, prices):
 
 
 def session_text(path):
-    """A main session's transcript, or None when it never started a run; remembered per version."""
+    """A main session's transcript, or None when it never started a run; remembered until the file changes."""
     stat = os.stat(path)
-    key = (path, stat.st_mtime, stat.st_size)
-    if key not in _SESSIONS:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            text = handle.read()
-        _SESSIONS[key] = text if "chief-run.py start" in text else None
-    return _SESSIONS[key]
+    cached = _SESSIONS.get(path)
+    if cached and cached[:2] == (stat.st_mtime, stat.st_size):
+        return cached[2]
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    text = text if "chief-run.py start" in text else None  # never keep a transcript that is not ours
+    _SESSIONS[path] = (stat.st_mtime, stat.st_size, text)
+    return text
+
+
+def session_transcript(config_dir, session_id):
+    """The main-session transcript for a session id, or None; an id that is not plain is never globbed."""
+    if not isinstance(session_id, str) or not SESSION_ID.match(session_id):
+        return None
+    matches = sorted(glob.glob(os.path.join(glob.escape(config_dir), "projects", "*", session_id + ".jsonl")))
+    return matches[0] if matches else None
+
+
+def jsonl_records(text, marker):
+    """The JSON records of the lines containing marker; lines that do not parse are skipped."""
+    for line in text.splitlines():
+        if marker in line:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                yield record
+
+
+def chat_title(text):
+    """The chat's title: the last non-empty custom title, else the last AI-written one."""
+    custom = ai = None
+    for record in jsonl_records(text, "title"):
+        kind = record.get("type")
+        if kind not in ("custom-title", "ai-title"):
+            continue
+        value = record.get("customTitle" if kind == "custom-title" else "aiTitle")
+        if isinstance(value, str) and value.strip():
+            if kind == "custom-title":
+                custom = value.strip()
+            else:
+                ai = value.strip()
+    return custom or ai
+
+
+def session_cwd(text):
+    """The folder the session ran in: the cwd of its first record that has one."""
+    for record in jsonl_records(text, '"cwd"'):
+        if isinstance(record.get("cwd"), str) and record["cwd"]:
+            return record["cwd"]
+    return None
 
 
 def chief_session(config_dir, run, prices, since):
     """The chief session.s own tokens: the main session that started this run, inside the run's time."""
     start = parse_time(run["started"])
     end = parse_time(run.get("ended"))
-    for path in glob.glob(os.path.join(config_dir, "projects", "*", "*.jsonl")):
+    found = None
+    recorded = session_transcript(config_dir, run.get("session_id"))
+    if recorded:
         try:
-            if os.path.getmtime(path) < since:
-                continue
-            text = session_text(path)
+            text = session_text(recorded)
         except OSError:
-            continue
-        if not text or run["id"] not in text:
-            continue
-        parsed = parse_messages(text.splitlines(), prices, start=start - 120, end=end, sidechain=False)
-        mtime = os.path.getmtime(path)
-        status = "done" if run.get("ended") else ("running" if time.time() - mtime < STALE_SECONDS else "stopped")
-        return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
-                "description": "the chief session", "status": status,
-                "started": run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
-                "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
-                "active": mtime, "context": parsed["context"], "_spend": parsed["spend"]}
-    return None
+            text = None
+        if text and run["id"] in text:
+            found = (recorded, text, True)
+    if not found:
+        for path in glob.glob(os.path.join(config_dir, "projects", "*", "*.jsonl")):
+            try:
+                if os.path.getmtime(path) < since:
+                    continue
+                text = session_text(path)
+            except OSError:
+                continue
+            if text and run["id"] in text:
+                found = (path, text, run["dir"] in text)  # an id alone is a loose match
+                break
+    if not found:
+        return None
+    path, text, sure = found
+    parsed = parse_messages(text.splitlines(), prices, start=start - 120, end=end, sidechain=False)
+    mtime = os.path.getmtime(path)
+    status = "done" if run.get("ended") else ("running" if time.time() - mtime < STALE_SECONDS else "stopped")
+    return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
+            "description": "the chief session", "status": status,
+            "started": run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
+            "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
+            "active": mtime, "context": parsed["context"], "_spend": parsed["spend"],
+            "session_id": os.path.basename(path)[: -len(".jsonl")], "chat_title": chat_title(text),
+            "cwd": session_cwd(text), "_transcript": path if sure else None}
 
 
 # ---- Codex agents, from run-codex-job.py's records ----------------------------------------
@@ -575,6 +642,14 @@ def codex_acts(log_path, limit=6):
     return acts, mtime
 
 
+def inside(folder, path):
+    """Whether path is a real location within folder."""
+    if not isinstance(path, str) or not path:
+        return False
+    root = os.path.realpath(folder)
+    return os.path.commonpath([root, os.path.realpath(path)]) == root
+
+
 def codex_agents(run_dir, prices):
     agents = []
     for path in sorted(glob.glob(os.path.join(run_dir, "agents", "codex-*.json"))):
@@ -592,6 +667,7 @@ def codex_agents(run_dir, prices):
         elif verdict == "FAILED" or status == "failed":
             status = "failed"
         acts, active = codex_acts(record.get("log"))
+        log = record.get("log")
         cost = price_codex(record.get("model"), record.get("usage"), prices)
         when = parse_time(record.get("ended") or record.get("started"))
         spend = {int(when // BUCKET_SECONDS): cost} if cost and when else {}
@@ -602,7 +678,8 @@ def codex_agents(run_dir, prices):
             "ended": record.get("ended"), "thread_id": record.get("thread_id"), "resumed": bool(record.get("resumed")),
             "tokens": {key: usage.get(key, 0) or 0 for key in ("input", "cached", "output", "reasoning")},
             "cost_usd": cost, "report": report[-6000:], "verdict": verdict, "acts": acts,
-            "active": active or parse_time(record.get("ended") or record.get("started")), "context": None, "_spend": spend})
+            "active": active or parse_time(record.get("ended") or record.get("started")), "context": None, "_spend": spend,
+            "_transcript": log if inside(run_dir, log) else None})
     latest = {}
     for agent in agents:
         if agent["thread_id"]:
@@ -834,6 +911,9 @@ def build_cards(runs, config_dir=None, prices=None):
             agent["kind"] = role_kind(agent["role"])
         card = {key: run.get(key) for key in ("key", "id", "title", "source", "phase", "phases", "started", "ended",
                                               "plan", "workspace", "dir", "repo", "archived")}
+        chief_row = next((agent for agent in agents if agent["id"] == "chief"), None) or {}
+        card.update(session_id=chief_row.get("session_id") or run.get("session_id"),
+                    chat_title=chief_row.get("chat_title"), cwd=chief_row.get("cwd") or run.get("repo"))
         last = max([parse_time(entry.get("at")) or 0 for entry in run.get("phases") or []]
                    + [agent.get("active") or 0 for agent in agents] + [parse_time(run.get("started")) or 0])
         working = any(agent["status"] == "running" and agent["kind"] != "chief" for agent in agents)
@@ -881,6 +961,7 @@ def build_board(repo=None, config_dir=None, prices=None, with_git=True, days=Non
     spend = spend_summary(agents, archived_total)
     for agent in agents:
         agent.pop("_spend", None)
+        agent["has_transcript"] = bool(agent.pop("_transcript", None))
     repos = []
     for path in dict.fromkeys(card["repo"] for card in cards):
         state = (git or git_state)(path) if with_git else None
@@ -1264,9 +1345,10 @@ def main():
             else:
                 title, text, origin = None, sys.stdin.read(), "chat"
             run_dir = start_run(repo, text, title=args.title or title, source=origin)
+            session_id = load_run(run_dir).get("session_id")
             key = run_key(repo, os.path.basename(run_dir))
             server = ensure_dashboard()
-            print(json.dumps({"run": run_dir, "id": os.path.basename(run_dir), "key": key,
+            print(json.dumps({"run": run_dir, "id": os.path.basename(run_dir), "key": key, "session_id": session_id,
                               "dashboard": f"{server['url']}?run={urllib.parse.quote(key)}",
                               "dashboard_server": server["server"], **({"dashboard_detail": server["detail"]} if "detail" in server else {}),
                               "tag": f"Run: {run_dir}   Task: <id>   Role: <role>"}))

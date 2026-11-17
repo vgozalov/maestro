@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -45,12 +46,15 @@ class Workspace(unittest.TestCase):
         self.projects.mkdir(parents=True)
         self.saved_home = os.environ.get("CHIEF_HOME")
         os.environ["CHIEF_HOME"] = str(root / "chief-home")  # never touch the real ~/.chief
+        self.saved_session = os.environ.pop("CLAUDE_CODE_SESSION_ID", None)  # never inherit the builder's own session
 
     def tearDown(self):
         if self.saved_home is None:
             os.environ.pop("CHIEF_HOME", None)
         else:
             os.environ["CHIEF_HOME"] = self.saved_home
+        if self.saved_session is not None:
+            os.environ["CLAUDE_CODE_SESSION_ID"] = self.saved_session
         self.folder.cleanup()
 
     def start(self, text="Add CSV export to the report page.\nClient wants it by Friday.", repo=None, **kwargs):
@@ -88,6 +92,15 @@ class Workspace(unittest.TestCase):
 
 
 class StartRunTest(Workspace):
+    def test_start_records_the_session(self):
+        run = self.start(session_id="1a2b3c4d-0000-1111")
+        self.assertEqual(json.loads((run / "run.json").read_text())["session_id"], "1a2b3c4d-0000-1111")
+
+    def test_the_session_id_comes_from_claude_code_when_not_given(self):
+        with unittest.mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "abc-123"}):
+            self.assertEqual(json.loads((self.start() / "run.json").read_text())["session_id"], "abc-123")
+        self.assertIsNone(json.loads((self.start() / "run.json").read_text())["session_id"])  # setUp removed it
+
     def test_start_saves_the_task_verbatim_and_hides_runs_from_git(self):
         run = self.start(title="CSV export")
         task = (run / "task.md").read_text()
@@ -116,6 +129,93 @@ class StartRunTest(Workspace):
         self.assertEqual(chief.issue_command("123")[:3], ["gh", "issue", "view"])
         self.assertEqual(chief.issue_command("https://gitlab.com/acme/app/-/issues/7")[:3], ["glab", "issue", "view"])
         self.assertEqual(chief.issue_command("https://github.com/acme/app/issues/9")[:3], ["gh", "issue", "view"])
+
+
+class SessionLinkTest(Workspace):
+    """The chief's chat session: which one, its title, its folder, and whether its transcript may be served."""
+
+    def main_session(self, session_id, run, mention="dir", cwd="/w/My Project", titles=(), input_tokens=100):
+        at = json.loads((run / "run.json").read_text())["started"]
+        named = str(run) if mention == "dir" else run.name
+        base = {"sessionId": session_id, "timestamp": at, "isSidechain": False, **({"cwd": cwd} if cwd else {})}
+        lines = [
+            {**base, "type": "user", "message": {"role": "user", "content": "/chief add CSV export"}},
+            {**base, "type": "assistant", "message": {
+                "id": f"msg_{session_id}", "model": "claude-opus-5-5", "role": "assistant", "stop_reason": "tool_use",
+                "usage": {"input_tokens": input_tokens, "output_tokens": 10},
+                "content": [{"type": "tool_use", "name": "Bash", "input": {"command": f"python3 chief-run.py start --title X  # {named}"}}]}},
+            *titles,
+        ]
+        path = self.config / "projects" / "-repo" / f"{session_id}.jsonl"
+        path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+        return path
+
+    def record_session(self, run, session_id):
+        state = json.loads((run / "run.json").read_text())
+        (run / "run.json").write_text(json.dumps({**state, "session_id": session_id}))
+
+    def card(self, run):
+        return next(item for item in self.board()["runs"] if item["id"] == run.name)
+
+    def chief_row(self, run):
+        return next(a for a in self.card(run)["agents"] if a["id"] == "chief")
+
+    def test_the_chief_row_comes_from_the_recorded_session(self):
+        run = self.start(title="X")
+        self.main_session("aaaa1111", run, input_tokens=999)
+        self.main_session("bbbb2222", run, input_tokens=100)
+        self.record_session(run, "bbbb2222")
+        row = self.chief_row(run)
+        self.assertEqual((row["session_id"], row["tokens"]["input"], row["has_transcript"]), ("bbbb2222", 100, True))
+        self.assertEqual(self.card(run)["session_id"], "bbbb2222")
+
+    def test_without_a_session_id_the_scan_still_finds_the_chief(self):
+        run = self.start(title="X")
+        self.main_session("cccc3333", run)
+        self.assertEqual(self.chief_row(run)["session_id"], "cccc3333")
+
+    def test_a_loosely_matched_chief_has_no_transcript(self):
+        run = self.start(title="X")
+        self.main_session("dddd4444", run, mention="id")
+        self.assertFalse(self.chief_row(run)["has_transcript"])
+
+    def test_an_unsafe_session_id_is_never_globbed(self):
+        for bad in ("../*", "*", "a/b", ""):
+            self.assertIsNone(chief.session_transcript(str(self.config), bad))
+
+    def test_chat_title_prefers_custom_then_ai_title(self):
+        ai = lambda t: {"type": "ai-title", "aiTitle": t}
+        custom = lambda t: {"type": "custom-title", "customTitle": t}
+        lines = lambda *records: "\n".join(json.dumps(r) for r in records)
+        self.assertEqual(chief.chat_title(lines(ai("A"), ai("B"), custom("C"))), "C")
+        self.assertEqual(chief.chat_title(lines(ai("A"), ai("B"))), "B")
+        self.assertEqual(chief.chat_title(lines(custom({"text": "odd"}), ai("B"))), "B")
+        self.assertEqual(chief.chat_title(lines(ai("A")) + "\n{not json ai-title"), "A")
+        self.assertIsNone(chief.chat_title(lines({"type": "user"})))
+        run = self.start(title="X")
+        self.main_session("eeee5555", run, titles=[ai("Fix filed issues"), custom("Dashboard work")])
+        self.assertEqual(self.card(run)["chat_title"], "Dashboard work")
+
+    def test_cwd_comes_from_the_session_else_the_repo(self):
+        run = self.start(title="X")
+        self.main_session("ffff6666", run, cwd="/w/My Project")
+        self.assertEqual(self.card(run)["cwd"], "/w/My Project")
+        other = self.start(title="Y")
+        self.assertEqual(self.card(other)["cwd"], str(self.repo.resolve()))
+
+    def test_worker_rows_carry_parent_session_and_agent_id(self):
+        run = self.start(title="X")
+        self.transcript("w1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        row = next(a for a in self.card(run)["agents"] if a["id"] == "claude-w1")
+        self.assertEqual((row["session_id"], row["agent_id"], row["has_transcript"]), ("session-1", "w1", True))
+
+    def test_the_board_holds_no_transcript_paths(self):
+        run = self.start(title="X")
+        self.main_session("aaaa1111", run)
+        self.transcript("w1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        text = json.dumps(self.board())
+        self.assertNotIn(str(self.config), text)
+        self.assertNotIn('"_transcript"', text)  # the key itself; has_transcript is meant to be there
 
 
 class PhaseTest(Workspace):
