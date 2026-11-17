@@ -309,5 +309,19 @@ class LinkTest(unittest.TestCase):
         self.assertNotRegex(absent, r"\d+ checkout")
 
 
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class ContextTest(unittest.TestCase):
+    def test_token_counts_are_short(self):
+        self.assertEqual(run_page("return [kTokens(950), kTokens(84210), kTokens(1250000), kTokens(null)]"), ["950", "84k", "1.25M", "—"])
+
+    def test_context_sits_before_the_cost(self):
+        agent = {"id": "claude-a", "kind": "implement", "role": "implement", "task": "1", "provider": "claude", "model": "claude-sonnet-5-5",
+                 "status": "done", "cost_usd": 1.5, "context": {"last": 84210, "peak": 120000}, "acts": []}
+        html = run_page(f"active = {json.dumps(sample_board([sample_run(agents=[agent])]))}; openKey = 'r1@abc'; renderScore({{ force: true }}); return $('score').innerHTML")
+        row = html[html.index('data-agent="claude-a"'):]
+        self.assertLess(row.index("84k ctx"), row.index("$1.50"))
+        self.assertIn("(peak 120k)", html)
+
+
 if __name__ == "__main__":
     unittest.main()

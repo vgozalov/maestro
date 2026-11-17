@@ -265,6 +265,7 @@ const DASH_HEADERS = { 'X-Chief-Dashboard': '1' }
 const $ = (id) => document.getElementById(id)
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 const money = (v) => v == null ? 'unpriced' : v > 0 && v < 0.005 ? '<$0.01' : '$' + Number(v).toFixed(2)
+const kTokens = (n) => n == null ? '—' : n < 1000 ? String(n) : n < 1000000 ? Math.round(n / 1000) + 'k' : (n / 1e6).toFixed(2) + 'M'
 const short = (m) => String(m || '?').replace(/^claude-/, '').replace(/-\d+(-\d+)*$/, '').replace(/^gpt-[\d.]+-/, '')
 const ms = (iso) => iso ? Date.parse(iso) : NaN
 function dur(from, to) {
@@ -562,7 +563,7 @@ function renderScore({ force = false } = {}) {
         <td class="mono" style="font-size:12px">${esc(short(a.model))}${a.effort ? ' · ' + esc(a.effort) : ''}</td>
         <td class="mono" style="font-size:12px;color:var(--muted)">${a.role !== kind ? esc(a.role) + ' ' : ''}${a.task !== '-' ? 'T' + esc(a.task) : ''}</td>
         <td><span class="state ${esc(a.status)}"><span class="bulb"></span>${esc(a.superseded ? 'resumed later' : String(a.status).replace('_', ' '))}</span></td>
-        <td class="num">${dur(a.started, a.ended)}</td><td class="num">${a.superseded ? '—' : money(a.cost_usd)}</td></tr>`).join('')}</tbody></table></div></div>`
+        <td class="num">${dur(a.started, a.ended)}</td><td class="num" title="${a.context ? `context: last call ${a.context.last}, peak ${a.context.peak} tokens` : 'Codex does not report context per call'}">${a.context ? kTokens(a.context.last) + ' ctx' : '—'}</td><td class="num">${a.superseded ? '—' : money(a.cost_usd)}</td></tr>`).join('')}</tbody></table></div></div>`
   }).join('') || '<p class="mix">No agents have reported to this run yet. Briefs start with the run tag so they show up here.</p>'
   const sel = r.agents.find((a) => a.id === openAgent) || stuck(r)[0] || live(r)[0] || r.agents.find((a) => a.kind !== 'chief') || r.agents[0]
   let side = ''
@@ -571,7 +572,7 @@ function renderScore({ force = false } = {}) {
     const vb = kind === 'conductor' ? '-90 -200 180 210' : '-80 -150 160 200'
     const lit = sel.status === 'running'
     side = `<div class="portrait"><svg viewBox="${vb}">${lit ? '<circle cx="9" cy="-40" r="70" fill="url(#lamp)"/>' : ''}<g class="${lit ? 'play' : ''}">${figure(kind, vb, `class="${sel.provider === 'chatgpt' ? 'patina' : ''}" style="${lit ? '' : 'opacity:.6'}"`)}</g></svg>
-      <div><h3>${esc(sel.role)}${sel.task !== '-' ? ' · T' + esc(sel.task) : ''}</h3><div class="mix"><span class="prov ${sel.provider}">${sel.provider === 'claude' ? 'Claude' : 'ChatGPT'}</span> · ${esc(short(sel.model))} · ${dur(sel.started, sel.ended)} · ${money(sel.cost_usd)}</div>
+      <div><h3>${esc(sel.role)}${sel.task !== '-' ? ' · T' + esc(sel.task) : ''}</h3><div class="mix"><span class="prov ${sel.provider}">${sel.provider === 'claude' ? 'Claude' : 'ChatGPT'}</span> · ${esc(short(sel.model))} · ${dur(sel.started, sel.ended)}${sel.context ? ` · ${kTokens(sel.context.last)} context (peak ${kTokens(sel.context.peak)})` : ''} · ${money(sel.cost_usd)}</div>
       <div style="margin-top:6px"><span class="state ${esc(sel.status)}"><span class="bulb"></span>${esc(String(sel.status).replace('_', ' '))}${sel.verdict ? ' · ' + esc(sel.verdict.toLowerCase().replace(/_/g, ' ')) : ''}</span></div>
       ${sel.description ? `<div class="mix" style="margin-top:4px">${esc(sel.description)}</div>` : ''}</div></div>
       ${(sel.acts || []).length ? `<div><div class="label" style="margin-bottom:6px">${lit ? 'now playing' : 'last tool calls'}</div><div class="acts">${sel.acts.map(([t, w]) => `<div><span>${esc(ago(t))}</span><span>${esc(w)}</span></div>`).join('')}</div></div>` : ''}
