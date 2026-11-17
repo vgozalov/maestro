@@ -347,7 +347,8 @@ def describe_tool(name, args):
     """One line for a tool call, as the dashboard's activity feed shows it."""
     args = args if isinstance(args, dict) else {}
     if name == "Bash":
-        return "Bash " + (args.get("description") or str(args.get("command") or "")).strip().splitlines()[0][:90] if (args.get("description") or args.get("command")) else "Bash"
+        lines = (str(args.get("description") or args.get("command") or "")).strip().splitlines()
+        return f"Bash {lines[0][:90]}" if lines else "Bash"
     if name in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit"):
         return f"{name} {short_path(args.get('file_path') or args.get('notebook_path') or '')}".strip()
     if name == "Grep":
@@ -1082,40 +1083,46 @@ def resolve_transcript(run, agent_id, config_dir=None, prices=None):
 def tool_result_text(content):
     if isinstance(content, str):
         return content
-    return " ".join(block.get("text", "") for block in content or [] if isinstance(block, dict))
+    if not isinstance(content, list):
+        return str(content or "")
+    return " ".join(str(block.get("text", "")) for block in content if isinstance(block, dict))
+
+
+def render_entry(entry, line):
+    """One transcript record as text, or None when it has nothing to show."""
+    message = entry.get("message")
+    if message is None:
+        return f"[{entry.get('type') or '?'}] {line.strip()[:2000]}"
+    if entry.get("type") not in ("user", "assistant") or not isinstance(message, dict):
+        return None
+    parts = [f"[{entry.get('timestamp') or ''}] {entry['type']}"]
+    content = message.get("content")
+    for item in [{"type": "text", "text": content}] if isinstance(content, str) else content or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            parts.append(str(item.get("text") or "")[:4000])
+        elif item.get("type") == "tool_use":
+            parts.append("→ " + describe_tool(item.get("name"), item.get("input")))
+        elif item.get("type") == "tool_result":
+            parts.append(tool_result_text(item.get("content"))[:2000])
+    return "\n".join(parts)
 
 
 def render_transcript(path, limit=300):
-    """A transcript as plain text, the last `limit` entries, each tool call on one line."""
+    """A transcript as plain text, the last `limit` entries, each tool call on one line. A record that
+    cannot be rendered is skipped, never fatal."""
     blocks, total = collections.deque(maxlen=limit), 0
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
             try:
                 entry = json.loads(line)
-            except json.JSONDecodeError:
+                block = render_entry(entry, line) if isinstance(entry, dict) else None
+            except Exception:
                 continue
-            if not isinstance(entry, dict):
-                continue
-            message = entry.get("message")
-            if message is None:
-                block = f"[{entry.get('type') or '?'}] {line.strip()[:2000]}"
-            elif entry.get("type") in ("user", "assistant") and isinstance(message, dict):
-                parts = [f"[{entry.get('timestamp') or ''}] {entry['type']}"]
-                content = message.get("content")
-                for item in [{"type": "text", "text": content}] if isinstance(content, str) else content or []:
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("type") == "text":
-                        parts.append(str(item.get("text") or "")[:4000])
-                    elif item.get("type") == "tool_use":
-                        parts.append("→ " + describe_tool(item.get("name"), item.get("input")))
-                    elif item.get("type") == "tool_result":
-                        parts.append(tool_result_text(item.get("content"))[:2000])
-                block = "\n".join(parts)
-            else:
-                continue
-            blocks.append(block)
-            total += 1
+            if block is not None:
+                blocks.append(block)
+                total += 1
     omitted = total - len(blocks)
     return "\n\n".join(([f"… {omitted} earlier entries omitted"] if omitted else []) + list(blocks))
 

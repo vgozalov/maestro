@@ -757,6 +757,55 @@ class ArchiveTest(Workspace):
         self.assertEqual(json.loads(out.stdout)["archived"], [chief.list_runs(str(self.repo))[0]["key"]])
 
 
+class RenderTranscriptTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+
+    def test_render_transcript_keeps_the_last_entries(self):
+        path = Path(self.folder.name) / "t.jsonl"
+        lines = [{"type": "user", "timestamp": f"t{i}", "message": {"role": "user", "content": f"line {i}"}} for i in range(5)]
+        path.write_text("\n".join(json.dumps(line) for line in lines))
+        text = chief.render_transcript(str(path), limit=2)
+        self.assertTrue(text.startswith("… 3 earlier entries omitted"))
+        self.assertIn("line 4", text)
+        self.assertNotIn("line 1", text)
+
+    def test_render_transcript_shows_tools_results_and_codex_lines(self):
+        path = Path(self.folder.name) / "t.jsonl"
+        records = [
+            {"type": "assistant", "timestamp": "t1", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "x" * 5000}, {"type": "tool_use", "name": "Read", "input": {"file_path": "/a/b/c.py"}}]}},
+            {"type": "user", "timestamp": "t2", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": [{"type": "text", "text": "y" * 3000}]}]}},
+            {"type": "turn.started", "item": "z" * 3000}]
+        path.write_text("\n".join(json.dumps(line) for line in records) + "\nnot json\n")
+        text = chief.render_transcript(str(path))
+        self.assertIn("[t1] assistant", text)
+        self.assertIn("→ Read b/c.py", text)
+        self.assertIn("x" * 4000, text)
+        self.assertNotIn("x" * 4001, text)
+        self.assertIn("y" * 2000, text)
+        self.assertNotIn("y" * 2001, text)
+        self.assertIn("[turn.started] ", text)
+        self.assertLess(len(text.split("[turn.started] ")[1]), 2100)
+
+    def test_odd_records_are_skipped_and_the_rest_rendered(self):
+        path = Path(self.folder.name) / "t.jsonl"
+        def record(content):
+            return {"type": "assistant", "timestamp": "t", "message": {"role": "assistant", "content": content}}
+        records = [record([{"type": "text", "text": "good one"}]),
+                   record([{"type": "tool_use", "input": {}}]),
+                   record([{"type": "tool_use", "name": "Bash", "input": {"description": "  \n "}}]),
+                   {"type": "user", "timestamp": "t", "message": {"role": "user", "content": [{"type": "tool_result", "content": 5}]}},
+                   record([{"type": "text", "text": "good two"}])]
+        path.write_text("\n".join(json.dumps(line) for line in records))
+        text = chief.render_transcript(str(path))
+        self.assertIn("good one", text)
+        self.assertIn("good two", text)
+        self.assertEqual(chief.describe_tool("Bash", {"description": "  \n "}), "Bash")
+
+
 class DashboardServerTest(Workspace):
     def setUp(self):
         super().setUp()
@@ -813,14 +862,19 @@ class DashboardServerTest(Workspace):
         self.assertEqual(self.get("/")[0], 200)
         self.assertEqual(self.get("/", {"Host": f"localhost:{self.port}"})[0], 200)
 
-    def test_render_transcript_keeps_the_last_entries(self):
-        path = Path(self.folder.name) / "t.jsonl"
-        lines = [{"type": "user", "timestamp": f"t{i}", "message": {"role": "user", "content": f"line {i}"}} for i in range(5)]
-        path.write_text("\n".join(json.dumps(line) for line in lines))
-        text = chief.render_transcript(str(path), limit=2)
-        self.assertTrue(text.startswith("… 3 earlier entries omitted"))
-        self.assertIn("line 4", text)
-        self.assertNotIn("line 1", text)
+    def test_odd_transcript_records_still_answer_200(self):
+        run = self.start(title="X")
+        self.transcript("a1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        odd = [{"type": "assistant", "timestamp": "t", "message": {"role": "assistant", "content": [{"type": "tool_use", "input": {}}]}},
+               {"type": "assistant", "timestamp": "t", "message": {"role": "assistant", "content": [
+                   {"type": "tool_use", "name": "Bash", "input": {"description": " \n"}}]}},
+               {"type": "user", "timestamp": "t", "message": {"role": "user", "content": [{"type": "tool_result", "content": 5}]}}]
+        with open(self.projects / "agent-a1.jsonl", "a") as handle:
+            handle.write("\n".join(json.dumps(line) for line in odd) + "\n")
+        key = chief.run_key(str(self.repo.resolve()), run.name)
+        status, text = self.get(f"/transcript?run={key}&agent=claude-a1", self.OK)
+        self.assertEqual(status, 200)
+        self.assertIn("DONE from a1", text)
 
     def test_the_path_is_checked_again_when_it_is_served(self):
         run = self.start(title="X")
@@ -837,25 +891,6 @@ class DashboardServerTest(Workspace):
             return cards
         with unittest.mock.patch.object(chief, "build_cards", planted):
             self.assertIsNone(chief.resolve_transcript(record, "claude-a1", str(self.config), PRICES))
-
-    def test_render_transcript_shows_tools_results_and_codex_lines(self):
-        path = Path(self.folder.name) / "t.jsonl"
-        records = [
-            {"type": "assistant", "timestamp": "t1", "message": {"role": "assistant", "content": [
-                {"type": "text", "text": "x" * 5000}, {"type": "tool_use", "name": "Read", "input": {"file_path": "/a/b/c.py"}}]}},
-            {"type": "user", "timestamp": "t2", "message": {"role": "user", "content": [
-                {"type": "tool_result", "content": [{"type": "text", "text": "y" * 3000}]}]}},
-            {"type": "turn.started", "item": "z" * 3000}]
-        path.write_text("\n".join(json.dumps(line) for line in records) + "\nnot json\n")
-        text = chief.render_transcript(str(path))
-        self.assertIn("[t1] assistant", text)
-        self.assertIn("→ Read b/c.py", text)
-        self.assertIn("x" * 4000, text)
-        self.assertNotIn("x" * 4001, text)
-        self.assertIn("y" * 2000, text)
-        self.assertNotIn("y" * 2001, text)
-        self.assertIn("[turn.started] ", text)
-        self.assertLess(len(text.split("[turn.started] ")[1]), 2100)
 
     def test_the_page_carries_the_robots(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/", timeout=10) as response:
