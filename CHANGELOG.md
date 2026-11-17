@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.0 (2026-11-17)
+
+### Chief: dashboard fixes
+
+- Fixed: tag paths with spaces (#9).
+- Fixed: an unknown `?run=` link shows a "Run not found" state (#1). One shared dashboard for every repo is kept.
+- Fixed: polling never rebuilds the score while you scroll, drag or select (#3).
+- Fixed: gauges and metrics sit in one row (#4).
+- Cards are at most 360px wide and never squeezed below 260px; the programme scrolls sideways on small screens. The page is no longer capped at 1600px, and the staff, measures and sparkline stay crisp.
+- Session badge and sibling runs, chat title, resume command, VS Code link, and read-only transcripts (#6, #7).
+- Context size is shown per Claude agent; Codex agents show as not reported (#8).
+- Every dashboard request checks its Host and header.
+- `DASHBOARD_VERSION` is 4: a running dashboard from an earlier version is replaced.
+- No model attribution on commits and PRs: a silent SessionStart hook sets Claude Code's `attribution` to empty strings in the user settings once per plugin version, only when the key is absent (backup at `settings.json.maestro-bak`; `MAESTRO_KEEP_ATTRIBUTION=1` opts out), and `git-check.py` warns about AI trailers in commits since the base.
+- The stage is redesigned: each chief run is its own small stage with a proscenium and curtains, and up to 10 playing robot agents grouped by role. The chief conducts while agents work, rests when the run is idle and bows when it is done; the stage turns to face the audience on joins, finishes and phase changes.
+- A prompt-cache badge on the run card and the score header shows whether the chief session's cache is hot (with the minutes left) or expired.
+- On a wide screen a busy programme column lays its cards two or three across.
+
 ## 1.1.0 (2026-11-14)
 
 ### Maestro: one plugin for Claude Code and Codex

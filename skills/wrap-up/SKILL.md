@@ -118,7 +118,6 @@ memory file, the learnings file) on the current branch:
 chore(docs): session wrap-up YYYY-MM-DD HH:MM
 ```
 
-End the message with whatever commit trailer the instructions file requires.
 Stage by explicit path, never the whole tree, so unrelated feature work is not
 swept in. Doc edits should never be held hostage to feature work being ready.
 

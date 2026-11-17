@@ -13,8 +13,10 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -32,6 +34,13 @@ def load(path, name):
 chief = load(SCRIPT, "chief_run")
 codex_job = load(HERE.parent.parent / "model-routing" / "scripts" / "run-codex-job.py", "run_codex_job")
 
+BARE = {"input_tokens": 5, "output_tokens": 5}
+WRITE_1H = {"input_tokens": 5, "output_tokens": 5, "cache_read_input_tokens": 40_000, "cache_creation_input_tokens": 2_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 2_000, "ephemeral_5m_input_tokens": 0}}
+WRITE_5M = {"input_tokens": 5, "output_tokens": 5, "cache_read_input_tokens": 40_000, "cache_creation_input_tokens": 2_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 2_000}}
+READ_ONLY = {"input_tokens": 5, "output_tokens": 5, "cache_read_input_tokens": 42_000, "cache_creation_input_tokens": 0}
+
 
 class Workspace(unittest.TestCase):
     def setUp(self):
@@ -45,12 +54,15 @@ class Workspace(unittest.TestCase):
         self.projects.mkdir(parents=True)
         self.saved_home = os.environ.get("CHIEF_HOME")
         os.environ["CHIEF_HOME"] = str(root / "chief-home")  # never touch the real ~/.chief
+        self.saved_session = os.environ.pop("CLAUDE_CODE_SESSION_ID", None)  # never inherit the builder's own session
 
     def tearDown(self):
         if self.saved_home is None:
             os.environ.pop("CHIEF_HOME", None)
         else:
             os.environ["CHIEF_HOME"] = self.saved_home
+        if self.saved_session is not None:
+            os.environ["CLAUDE_CODE_SESSION_ID"] = self.saved_session
         self.folder.cleanup()
 
     def start(self, text="Add CSV export to the report page.\nClient wants it by Friday.", repo=None, **kwargs):
@@ -88,6 +100,21 @@ class Workspace(unittest.TestCase):
 
 
 class StartRunTest(Workspace):
+    def test_start_records_the_session(self):
+        run = self.start(session_id="1a2b3c4d-0000-1111")
+        self.assertEqual(json.loads((run / "run.json").read_text())["session_id"], "1a2b3c4d-0000-1111")
+
+    def test_the_session_id_comes_from_claude_code_when_not_given(self):
+        with unittest.mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "abc-123"}):
+            self.assertEqual(json.loads((self.start() / "run.json").read_text())["session_id"], "abc-123")
+        self.assertIsNone(json.loads((self.start() / "run.json").read_text())["session_id"])  # setUp removed it
+
+    def test_an_invalid_session_id_is_recorded_as_null(self):
+        for bad in ("../*", "a/b", "x" * 81, "abc\n"):
+            with unittest.mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": bad}):
+                self.assertIsNone(json.loads((self.start() / "run.json").read_text())["session_id"])
+            self.assertIsNone(json.loads((self.start(session_id=bad) / "run.json").read_text())["session_id"])
+
     def test_start_saves_the_task_verbatim_and_hides_runs_from_git(self):
         run = self.start(title="CSV export")
         task = (run / "task.md").read_text()
@@ -116,6 +143,169 @@ class StartRunTest(Workspace):
         self.assertEqual(chief.issue_command("123")[:3], ["gh", "issue", "view"])
         self.assertEqual(chief.issue_command("https://gitlab.com/acme/app/-/issues/7")[:3], ["glab", "issue", "view"])
         self.assertEqual(chief.issue_command("https://github.com/acme/app/issues/9")[:3], ["gh", "issue", "view"])
+
+
+class SessionLinkTest(Workspace):
+    """The chief's chat session: which one, its title, its folder, and whether its transcript may be served."""
+
+    def main_session(self, session_id, run, mention="dir", cwd="/w/My Project", titles=(), input_tokens=100):
+        at = json.loads((run / "run.json").read_text())["started"]
+        named = str(run) if mention == "dir" else run.name
+        base = {"sessionId": session_id, "timestamp": at, "isSidechain": False, **({"cwd": cwd} if cwd else {})}
+        lines = [
+            {**base, "type": "user", "message": {"role": "user", "content": "/chief add CSV export"}},
+            {**base, "type": "assistant", "message": {
+                "id": f"msg_{session_id}", "model": "claude-opus-5-5", "role": "assistant", "stop_reason": "tool_use",
+                "usage": {"input_tokens": input_tokens, "output_tokens": 10},
+                "content": [{"type": "tool_use", "name": "Bash", "input": {"command": f"python3 chief-run.py start --title X  # {named}"}}]}},
+            *titles,
+        ]
+        path = self.config / "projects" / "-repo" / f"{session_id}.jsonl"
+        path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+        return path
+
+    def record_session(self, run, session_id):
+        state = json.loads((run / "run.json").read_text())
+        (run / "run.json").write_text(json.dumps({**state, "session_id": session_id}))
+
+    def card(self, run):
+        return next(item for item in self.board()["runs"] if item["id"] == run.name)
+
+    def chief_row(self, run):
+        return next(a for a in self.card(run)["agents"] if a["id"] == "chief")
+
+    def test_the_chief_row_comes_from_the_recorded_session(self):
+        run = self.start(title="X")
+        self.main_session("aaaa1111", run, input_tokens=999)
+        self.main_session("bbbb2222", run, input_tokens=100)
+        self.record_session(run, "bbbb2222")
+        row = self.chief_row(run)
+        self.assertEqual((row["session_id"], row["tokens"]["input"], row["has_transcript"]), ("bbbb2222", 100, True))
+        self.assertEqual(self.card(run)["session_id"], "bbbb2222")
+
+    def test_a_tampered_session_id_never_reaches_the_card(self):
+        run = self.start(title="X")
+        self.record_session(run, "../../etc/x")
+        self.assertIsNone(self.card(run)["session_id"])
+
+    def test_without_a_session_id_the_scan_still_finds_the_chief(self):
+        run = self.start(title="X")
+        self.main_session("cccc3333", run)
+        self.assertEqual(self.chief_row(run)["session_id"], "cccc3333")
+
+    def test_a_loosely_matched_chief_has_no_transcript(self):
+        run = self.start(title="X")
+        self.main_session("dddd4444", run, mention="id")
+        self.assertFalse(self.chief_row(run)["has_transcript"])
+
+    def test_an_unsafe_session_id_is_never_globbed(self):
+        for bad in ("../*", "*", "a/b", ""):
+            self.assertIsNone(chief.session_transcript(str(self.config), bad))
+
+    def test_chat_title_prefers_custom_then_ai_title(self):
+        ai = lambda t: {"type": "ai-title", "aiTitle": t}
+        custom = lambda t: {"type": "custom-title", "customTitle": t}
+        lines = lambda *records: "\n".join(json.dumps(r) for r in records)
+        self.assertEqual(chief.chat_title(lines(ai("A"), ai("B"), custom("C"))), "C")
+        self.assertEqual(chief.chat_title(lines(ai("A"), ai("B"))), "B")
+        self.assertEqual(chief.chat_title(lines(custom({"text": "odd"}), ai("B"))), "B")
+        self.assertEqual(chief.chat_title(lines(ai("A")) + "\n{not json ai-title"), "A")
+        self.assertIsNone(chief.chat_title(lines({"type": "user"})))
+        run = self.start(title="X")
+        self.main_session("eeee5555", run, titles=[ai("Fix filed issues"), custom("Dashboard work")])
+        self.assertEqual(self.card(run)["chat_title"], "Dashboard work")
+
+    def test_cwd_comes_from_the_session_else_the_repo(self):
+        run = self.start(title="X")
+        self.main_session("ffff6666", run, cwd="/w/My Project")
+        self.assertEqual(self.card(run)["cwd"], "/w/My Project")
+        other = self.start(title="Y")
+        self.assertEqual(self.card(other)["cwd"], str(self.repo.resolve()))
+
+    def test_worker_rows_carry_parent_session_and_agent_id(self):
+        run = self.start(title="X")
+        self.transcript("w1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        row = next(a for a in self.card(run)["agents"] if a["id"] == "claude-w1")
+        self.assertEqual((row["session_id"], row["agent_id"], row["has_transcript"]), ("session-1", "w1", True))
+
+    def test_the_board_holds_no_transcript_paths(self):
+        run = self.start(title="X")
+        self.main_session("aaaa1111", run)
+        self.transcript("w1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        text = json.dumps(self.board())
+        self.assertNotIn(str(self.config), text)
+        self.assertNotIn('"_transcript"', text)  # the key itself; has_transcript is meant to be there
+
+    def turns(self, path, run, session_id, turns):
+        """Append assistant turns, given as (seconds after the run started, usage), to a main session file. Returns the start as epoch seconds."""
+        began = chief.parse_time(json.loads((run / "run.json").read_text())["started"])
+        lines = []
+        for index, (offset, usage) in enumerate(turns):
+            stamp = datetime.fromtimestamp(began + offset, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            lines.append({"sessionId": session_id, "type": "assistant", "timestamp": stamp, "isSidechain": False,
+                          "message": {"id": f"msg_{session_id}_t{index}", "model": "claude-opus-5-5", "role": "assistant",
+                                      "stop_reason": "tool_use", "usage": usage, "content": [{"type": "text", "text": "ok"}]}})
+        with open(path, "a") as handle:
+            handle.write("\n".join(json.dumps(line) for line in lines) + "\n")
+        return int(began)
+
+    def cache_of(self, run, turns, session_id="cache0001"):
+        began = self.turns(self.main_session(session_id, run), run, session_id, turns)
+        return began, self.card(run)["cache"]
+
+    def test_a_one_hour_write_means_a_one_hour_ttl(self):
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, WRITE_1H)])
+        self.assertEqual(cache, {"last_at": began + 60, "ttl_s": 3600})
+        self.assertEqual(self.chief_row(run)["cache"], cache)
+
+    def test_a_five_minute_write_means_a_five_minute_ttl(self):
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, WRITE_5M)])
+        self.assertEqual(cache, {"last_at": began + 60, "ttl_s": 300})
+
+    def test_no_usage_means_no_cache_and_no_cache_tokens_means_no_ttl(self):
+        no_usage = json.dumps({"type": "assistant", "timestamp": "2026-11-17T00:00:00Z", "message": {"id": "m", "role": "assistant", "content": []}})
+        self.assertIsNone(chief.parse_messages([no_usage], PRICES)["cache"])
+        self.assertIsNone(chief.parse_messages([], PRICES)["cache"])
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, BARE)])
+        self.assertEqual(cache, {"last_at": began + 60, "ttl_s": None})
+
+    def test_the_last_message_wins(self):
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, WRITE_1H), (600, WRITE_5M)])
+        self.assertEqual(cache, {"last_at": began + 600, "ttl_s": 300})
+        other = self.start(title="Y")
+        began, cache = self.cache_of(other, [(60, WRITE_5M), (900, WRITE_1H)], session_id="cache0002")
+        self.assertEqual(cache, {"last_at": began + 900, "ttl_s": 3600})
+
+    def test_a_pure_cache_read_keeps_the_ttl_of_the_last_write(self):
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, WRITE_1H), (900, READ_ONLY)])
+        self.assertEqual(cache, {"last_at": began + 900, "ttl_s": 3600})
+        other = self.start(title="Y")
+        began, cache = self.cache_of(other, [(60, READ_ONLY)], session_id="cache0003")
+        self.assertEqual(cache, {"last_at": began + 60, "ttl_s": 300})
+
+    def test_a_message_that_is_not_the_last_does_not_decide_the_ttl(self):
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, WRITE_1H), (120, BARE)])
+        self.assertEqual(cache, {"last_at": began + 120, "ttl_s": None})
+
+    def test_a_finished_run_has_no_cache_and_workers_never_get_one(self):
+        run = self.start(title="X")
+        self.cache_of(run, [(60, WRITE_1H)])
+        self.transcript("w1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        row = next(a for a in self.card(run)["agents"] if a["id"] == "claude-w1")
+        self.assertNotIn("cache", row)
+        chief.set_phase(str(run), "done")
+        self.assertIsNone(self.card(run)["cache"])
+        self.assertIsNone(self.chief_row(run)["cache"])
+
+    def test_a_run_without_a_chief_session_has_no_cache(self):
+        run = self.start(title="X")
+        self.assertIsNone(self.card(run)["cache"])
 
 
 class PhaseTest(Workspace):
@@ -177,6 +367,19 @@ class BoardTest(Workspace):
         self.assertEqual(agent["model"], "claude-opus-5-5")
         self.assertIn("DONE from a1", agent["report"])
 
+    def test_each_claude_agent_reports_its_last_and_peak_context(self):
+        run = self.start(title="X")
+        self.transcript("c1", f"Run: {run}   Task: 1   Role: implement", [
+            ("claude-sonnet-5-5", {"input_tokens": 100, "output_tokens": 5, "cache_read_input_tokens": 50_000, "cache_creation_input_tokens": 2_000}),
+            ("claude-sonnet-5-5", {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 30_000, "cache_creation_input_tokens": 0}),
+        ])
+        self.codex_record(run, "build-2")
+        card = next(item for item in self.board()["runs"] if item["id"] == run.name)
+        worker = next(a for a in card["agents"] if a["id"] == "claude-c1")
+        self.assertEqual(worker["context"], {"last": 30_010, "peak": 52_100})
+        self.assertIsNone(next(a for a in card["agents"] if a["provider"] == "chatgpt")["context"])
+        self.assertNotIn("context", worker["tokens"])
+
     def test_cache_writes_and_reads_use_their_own_prices(self):
         usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 1_000_000,
                  "cache_creation_input_tokens": 2_000_000,
@@ -204,6 +407,14 @@ class BoardTest(Workspace):
         totals = self.board()["runs"][0]["totals"]
         self.assertEqual(totals["chatgpt"]["unpriced"], 1)
         self.assertEqual(totals["chatgpt"]["cost_usd"], 0)
+
+    def test_subagents_of_a_repo_with_a_space_in_its_path_are_found(self):
+        repo = self.other_repo("My Project")
+        run = self.start(repo=repo, title="Spaced")
+        self.transcript("s1", f"Run: {run}   Task: 2   Role: implement\nBuild it.", [
+            ("claude-sonnet-5-5", {"input_tokens": 10, "output_tokens": 10})])
+        card = next(item for item in self.board()["runs"] if item["id"] == run.name)
+        self.assertEqual([(a["role"], a["task"]) for a in card["agents"] if a["id"] != "chief"], [("implement", "2")])
 
     def test_a_running_codex_job_whose_process_is_gone_shows_stopped(self):
         run = self.start(title="X")
@@ -616,6 +827,16 @@ class ArchiveTest(Workspace):
         board = chief.build_board(str(self.repo), config_dir=str(self.config), prices=PRICES, with_git=False, days=14)
         self.assertEqual((board["runs"], board["archived_count"]), ([], 1))
 
+    def test_start_prints_the_run_but_not_the_session_id(self):
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.config), "CHIEF_DASHBOARD": "off", "CLAUDE_CODE_SESSION_ID": "abc-123"}
+        out = subprocess.run([sys.executable, "-B", str(SCRIPT), "start", "--title", "X"], cwd=self.repo, env=env,
+                             input="do the thing", capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        printed = json.loads(out.stdout)
+        self.assertNotIn("session_id", printed)
+        self.assertEqual(printed["id"], Path(printed["run"]).name)
+        self.assertEqual(json.loads((Path(printed["run"]) / "run.json").read_text())["session_id"], "abc-123")
+
     def test_archive_from_the_command_line(self):
         run = self.start(title="X")
         chief.set_phase(str(run), "done")
@@ -625,12 +846,62 @@ class ArchiveTest(Workspace):
         self.assertEqual(json.loads(out.stdout)["archived"], [chief.list_runs(str(self.repo))[0]["key"]])
 
 
+class RenderTranscriptTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+
+    def test_render_transcript_keeps_the_last_entries(self):
+        path = Path(self.folder.name) / "t.jsonl"
+        lines = [{"type": "user", "timestamp": f"t{i}", "message": {"role": "user", "content": f"line {i}"}} for i in range(5)]
+        path.write_text("\n".join(json.dumps(line) for line in lines))
+        text = chief.render_transcript(str(path), limit=2)
+        self.assertTrue(text.startswith("… 3 earlier entries omitted"))
+        self.assertIn("line 4", text)
+        self.assertNotIn("line 1", text)
+
+    def test_render_transcript_shows_tools_results_and_codex_lines(self):
+        path = Path(self.folder.name) / "t.jsonl"
+        records = [
+            {"type": "assistant", "timestamp": "t1", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "x" * 5000}, {"type": "tool_use", "name": "Read", "input": {"file_path": "/a/b/c.py"}}]}},
+            {"type": "user", "timestamp": "t2", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": [{"type": "text", "text": "y" * 3000}]}]}},
+            {"type": "turn.started", "item": "z" * 3000}]
+        path.write_text("\n".join(json.dumps(line) for line in records) + "\nnot json\n")
+        text = chief.render_transcript(str(path))
+        self.assertIn("[t1] assistant", text)
+        self.assertIn("→ Read b/c.py", text)
+        self.assertIn("x" * 4000, text)
+        self.assertNotIn("x" * 4001, text)
+        self.assertIn("y" * 2000, text)
+        self.assertNotIn("y" * 2001, text)
+        self.assertIn("[turn.started] ", text)
+        self.assertLess(len(text.split("[turn.started] ")[1]), 2100)
+
+    def test_odd_records_are_skipped_and_the_rest_rendered(self):
+        path = Path(self.folder.name) / "t.jsonl"
+        def record(content):
+            return {"type": "assistant", "timestamp": "t", "message": {"role": "assistant", "content": content}}
+        records = [record([{"type": "text", "text": "good one"}]),
+                   record([{"type": "tool_use", "input": {}}]),
+                   record([{"type": "tool_use", "name": "Bash", "input": {"description": "  \n "}}]),
+                   {"type": "user", "timestamp": "t", "message": {"role": "user", "content": [{"type": "tool_result", "content": 5}]}},
+                   record([{"type": "text", "text": "good two"}])]
+        path.write_text("\n".join(json.dumps(line) for line in records))
+        text = chief.render_transcript(str(path))
+        self.assertIn("good one", text)
+        self.assertIn("good two", text)
+        self.assertEqual(chief.describe_tool("Bash", {"description": "  \n "}), "Bash")
+
+
 class DashboardServerTest(Workspace):
     def setUp(self):
         super().setUp()
         self.port = free_port()
         self.server = subprocess.Popen([sys.executable, "-B", str(SCRIPT), "serve", "--port", str(self.port), "--refresh-usage", "0"],
-                                       cwd=self.repo, env={**os.environ, "CLAUDE_CONFIG_DIR": str(self.config)},
+                                       cwd=self.repo, env={k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+                                       | {"CLAUDE_CONFIG_DIR": str(self.config)},
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(self.server.wait)
         self.addCleanup(self.server.terminate)
@@ -647,6 +918,73 @@ class DashboardServerTest(Workspace):
         except urllib.error.HTTPError as error:
             error.close()
             return error.code, None
+
+    def get(self, path, headers=None):
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", headers=headers or {})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, response.read().decode()
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code, error.read().decode()
+
+    OK = {"X-Chief-Dashboard": "1"}
+
+    def test_transcript_is_served_only_for_known_agents(self):
+        run = self.start(title="X")
+        self.transcript("a1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        key = chief.run_key(str(self.repo.resolve()), run.name)
+        status, text = self.get(f"/transcript?run={key}&agent=claude-a1", self.OK)
+        self.assertEqual(status, 200)
+        self.assertIn("DONE from a1", text)
+        self.assertEqual(self.get(f"/transcript?run={key}&agent=claude-a1")[0], 403)
+        self.assertEqual(self.get(f"/transcript?run={key}&agent=../../etc/passwd", self.OK)[0], 404)
+        self.assertEqual(self.get("/transcript?run=nope&agent=claude-a1", self.OK)[0], 404)
+
+    def test_every_get_checks_the_host_and_data_needs_the_header(self):
+        evil = {"Host": "evil.example:80"}
+        for path in ("/", "/health", "/board.json", "/fonts/instrument-serif.woff2"):
+            self.assertEqual(self.get(path, {**self.OK, **evil})[0], 403, path)
+        self.assertEqual(self.get("/board.json"), (403, "This page is out of date — reload it."))
+        status, body = self.get("/board.json", {**self.OK, **evil})
+        self.assertEqual(status, 403)
+        self.assertIn(f"http://127.0.0.1:{self.port}/", body)
+        self.assertIn("host name is not allowed", body)
+        self.assertNotIn("out of date", body)
+        self.assertEqual(self.get("/board.json", self.OK)[0], 200)
+        self.assertEqual(self.get("/file?run=x&name=task")[0], 403)
+        self.assertEqual(self.get("/")[0], 200)
+        self.assertEqual(self.get("/", {"Host": f"localhost:{self.port}"})[0], 200)
+
+    def test_odd_transcript_records_still_answer_200(self):
+        run = self.start(title="X")
+        self.transcript("a1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        odd = [{"type": "assistant", "timestamp": "t", "message": {"role": "assistant", "content": [{"type": "tool_use", "input": {}}]}},
+               {"type": "assistant", "timestamp": "t", "message": {"role": "assistant", "content": [
+                   {"type": "tool_use", "name": "Bash", "input": {"description": " \n"}}]}},
+               {"type": "user", "timestamp": "t", "message": {"role": "user", "content": [{"type": "tool_result", "content": 5}]}}]
+        with open(self.projects / "agent-a1.jsonl", "a") as handle:
+            handle.write("\n".join(json.dumps(line) for line in odd) + "\n")
+        key = chief.run_key(str(self.repo.resolve()), run.name)
+        status, text = self.get(f"/transcript?run={key}&agent=claude-a1", self.OK)
+        self.assertEqual(status, 200)
+        self.assertIn("DONE from a1", text)
+
+    def test_the_path_is_checked_again_when_it_is_served(self):
+        run = self.start(title="X")
+        self.transcript("a1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        record = chief.list_runs(str(self.repo))[0]
+        self.assertTrue(chief.resolve_transcript(record, "claude-a1", str(self.config), PRICES))
+        outside = Path(self.folder.name) / "outside.jsonl"
+        outside.write_text("secret")
+        real = chief.build_cards
+
+        def planted(runs, config_dir=None, prices=None):
+            cards = real(runs, config_dir, prices)
+            cards[0]["agents"][0]["_transcript"] = str(outside)
+            return cards
+        with unittest.mock.patch.object(chief, "build_cards", planted):
+            self.assertIsNone(chief.resolve_transcript(record, "claude-a1", str(self.config), PRICES))
 
     def test_the_page_carries_the_robots(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/", timeout=10) as response:
@@ -678,6 +1016,34 @@ class CodexRecordTest(unittest.TestCase):
 
     def test_a_brief_without_a_tag_has_none(self):
         self.assertIsNone(codex_job.parse_run_tag("Repo: /repo\nFix it."))
+
+    def test_a_run_path_with_spaces_is_read_whole(self):
+        tag = codex_job.parse_run_tag("Run: /a/My Project/.chief/runs/r1   Task: 2   Role: implement\nRepo: /a")
+        self.assertEqual(tag, {"run": "/a/My Project/.chief/runs/r1", "task": "2", "role": "implement"})
+
+    def test_a_tag_without_task_and_role_keeps_the_whole_path(self):
+        tag = codex_job.parse_run_tag("Run: /a/My Project/r1  \nRepo: /a")
+        self.assertEqual(tag, {"run": "/a/My Project/r1", "task": None, "role": None})
+
+    def test_single_spaces_between_fields_still_split(self):
+        self.assertEqual(codex_job.parse_run_tag("Run: r1 Task: - Role: review"), {"run": "r1", "task": "-", "role": "review"})
+
+    def test_the_tag_never_reads_the_next_line(self):
+        self.assertEqual(codex_job.parse_run_tag("Run: /a/r1\nTask: 3"), {"run": "/a/r1", "task": None, "role": None})
+        self.assertEqual(codex_job.parse_run_tag("Run: /a/r1\nRepo: /a"), {"run": "/a/r1", "task": None, "role": None})
+        self.assertIsNone(codex_job.parse_run_tag("Run:\nRepo: /a"))
+
+    def test_chief_run_reads_the_same_tag(self):
+        match = chief.RUN_TAG.search("Run: /a/My Project/r1   Task: 2   Role: fix\nRepo: /a")
+        self.assertEqual(match.groups(), ("/a/My Project/r1", "2", "fix"))
+
+    def test_a_tag_from_a_brief_with_windows_line_endings_has_no_carriage_return(self):
+        match = chief.RUN_TAG.search("Run: /a/r1\r\nRepo: /a")
+        self.assertEqual(match.group(1), "/a/r1")
+        match = chief.RUN_TAG.search("Run: /a/My Project/r1   Task: 2   Role: fix\r\nRepo: /a")
+        self.assertEqual(match.groups(), ("/a/My Project/r1", "2", "fix"))
+        match = chief.RUN_TAG.search("Run: /a/r1  \r\n")
+        self.assertEqual(match.group(1), "/a/r1")
 
     def test_records_are_written_into_the_run_folder(self):
         with tempfile.TemporaryDirectory() as folder:

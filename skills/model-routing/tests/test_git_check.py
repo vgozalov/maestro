@@ -167,6 +167,50 @@ class BranchStateTest(RepoTestCase):
         self.assertEqual(self.report()["warnings"], [])
 
 
+class AttributionTrailerTest(RepoTestCase):
+    def commit_with(self, subject, body, name="a.js"):
+        self.write(f"src/{name}", subject)
+        self.commit(f"{subject}\n\n{body}")
+
+    def warning(self):
+        return [w for w in self.report()["warnings"] if "attribution" in w]
+
+    def test_model_trailers_in_commits_since_the_base_are_warned_about(self):
+        self.commit_with("feat: one", "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>", "a.js")
+        self.commit_with("feat: two", "co-authored-by: ChatGPT <noreply@openai.com>", "b.js")
+        self.commit_with("feat: three", "\U0001F916 Generated with [Claude Code](https://claude.com/claude-code)", "c.js")
+        self.commit_with("feat: four", "Co-authored-by: Codex <codex@openai.com>", "d.js")
+        self.commit_with("feat: clean", "A plain body.", "e.js")
+        found = self.report()["attribution_commits"]
+        self.assertEqual(len(found), 4)
+        warning = self.warning()
+        self.assertEqual(len(warning), 1)
+        self.assertIn("4 commit(s)", warning[0])
+        self.assertIn("strip", warning[0])
+        for commit in found[:3]:
+            self.assertIn(commit["sha"], warning[0])
+        self.assertNotIn(found[3]["sha"], warning[0])
+
+    def test_a_human_co_author_and_ordinary_words_are_left_alone(self):
+        self.commit_with("feat: one", "Co-Authored-By: Jane Doe <jane@example.com>", "a.js")
+        self.commit_with("fix: claude desktop path", "Generated with the build script.\nMentions Claude in prose.", "b.js")
+        self.assertEqual(self.report()["attribution_commits"], [])
+        self.assertEqual(self.warning(), [])
+
+    def test_commits_before_the_base_are_not_checked(self):
+        self.git("checkout", "-q", "main")
+        self.commit_with("feat: old", "Co-Authored-By: Claude <noreply@anthropic.com>", "a.js")
+        self.git("checkout", "-q", "-b", "other")
+        self.assertEqual(self.report()["attribution_commits"], [])
+
+    def test_a_clean_branch_prints_nothing_extra_with_warnings_only(self):
+        self.commit_with("feat: clean", "A plain body.", "a.js")
+        self.assertEqual(self.report()["warnings"], [])
+        out = subprocess.run(["python3", "-B", str(SCRIPTS / "git-check.py"), "--base", "main", "--warnings-only"],
+                             cwd=self.repo, capture_output=True, text=True, env={**os.environ, "HOME": str(self.home)})
+        self.assertEqual(json.loads(out.stdout), {"branch": "feature", "run_marker": False, "warnings": []})
+
+
 class SpawnHookTest(unittest.TestCase):
     def test_the_usage_hook_is_found_in_project_or_user_settings(self):
         with tempfile.TemporaryDirectory() as folder:

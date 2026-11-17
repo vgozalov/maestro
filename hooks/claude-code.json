@@ -1,6 +1,18 @@
 {
-  "description": "Maestro: during a chief run, add both accounts' usage and the routing pick to the context before every agent spawn and Codex job.",
+  "description": "Maestro: once per plugin version, turn off Claude Code's own commit/PR attribution (silent SessionStart hook); during a chief run, add both accounts' usage and the routing pick to the context before every agent spawn and Codex job.",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 10,
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/disable-attribution.py\""
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Agent|Task",

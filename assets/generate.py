@@ -200,7 +200,7 @@ def _defs_body():
     <linearGradient id="woodgrad" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#82431A"/><stop offset="1" stop-color="#32180A"/>
     </linearGradient>
-    <linearGradient id="podium" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="podiumWood" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#3A2514"/><stop offset="1" stop-color="#150D07"/>
     </linearGradient>
     <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
@@ -534,7 +534,7 @@ def podium(cx, top, w=150, h=62):
         px = x0 + 10 + i * (w - 20) / 3
         inner += '<rect x="%s" y="%s" width="%s" height="%s" rx="2" fill="none" stroke="#B88A34" stroke-opacity="0.45" stroke-width="1"/>' % (
             num(px), top + 14, num((w - 20) / 3 - 6), h - 24)
-    return ('<rect x="%s" y="%s" width="%s" height="%s" fill="url(#podium)" stroke="#6B4A1C" stroke-width="1.2"/>'
+    return ('<rect x="%s" y="%s" width="%s" height="%s" fill="url(#podiumWood)" stroke="#6B4A1C" stroke-width="1.2"/>'
             '<rect x="%s" y="%s" width="%s" height="7" fill="#4A3014" stroke="#B88A34" stroke-opacity="0.6" stroke-width="1"/>%s'
             % (num(x0), top, w, h, num(x0 - 6), top, w + 12, inner))
 
@@ -836,8 +836,15 @@ def install_flow():
     return svg_doc(W, H, "How installing works", desc, plate(W, H, p, t))
 
 
+# The chief seen from the front, cut from r-conductor without its arms: the dashboard draws the arms itself so the
+# chief can nod, open a hand toward a player, raise the baton and bow (skills/chief/dashboard.html, the Stage module).
+CHIEF_LEGS = ('<symbol id="r-chief-legs" viewBox="-90 -200 180 210" overflow="visible"><path d="M -22 -62 L -34 -26 L -12 -56 Z M 22 -62 L 34 -26 L 12 -56 Z" fill="#120B06" stroke="#6B4A1C" stroke-width="1"/><path d="M -9 -62 V 0 M 9 -62 V 0" stroke="#1C120A" stroke-width="12" stroke-linecap="round"/><path d="M -9 -62 V -2 M 9 -62 V -2" stroke="#3A2616" stroke-width="2" stroke-linecap="round" opacity="0.7"/><ellipse cx="-10" cy="0" rx="10" ry="3.6" fill="#0E0805" stroke="#B88A34" stroke-width="0.9"/><ellipse cx="10" cy="0" rx="10" ry="3.6" fill="#0E0805" stroke="#B88A34" stroke-width="0.9"/><path d="M -26 -100 H -36" stroke="#8A6224" stroke-width="3" stroke-linecap="round"/><ellipse cx="-40" cy="-106.5" rx="5.2" ry="3.7" fill="#C9993C" stroke="#150C05" stroke-width="1.3"/><ellipse cx="-40" cy="-93.5" rx="5.2" ry="3.7" fill="#C9993C" stroke="#150C05" stroke-width="1.3"/></symbol>')
+CHIEF_TORSO = ('<symbol id="r-chief-torso" viewBox="-90 -200 180 210" overflow="visible"><path d="M -23 -62 L -27 -118 Q -27 -130 -14 -130 L 14 -130 Q 27 -130 27 -118 L 23 -62 Z" fill="url(#cloth)" stroke="#6B4A1C" stroke-width="1.4"/><path d="M -23 -62 L -27 -118 Q -27 -130 -14 -130 L 14 -130 Q 27 -130 27 -118 L 23 -62 Z" fill="url(#hatch)" mask="url(#shade)"/><path d="M -23 -62 L -27 -118 Q -27 -130 -14 -130 L 14 -130 Q 27 -130 27 -118 L 23 -62 Z" fill="url(#hatchB)" mask="url(#shadeDeep)"/><g clip-path="url(#clipCoat)" mask="url(#shade)" fill="none" stroke="#000" stroke-width="0.8" stroke-linecap="round" opacity="0.6"><path d="M 2 -130 Q 5 -96 0 -62"/><path d="M 7 -130 Q 10 -96 5 -62"/><path d="M 12 -130 Q 15 -96 10 -62"/><path d="M 17 -130 Q 20 -96 15 -62"/><path d="M 22 -130 Q 25 -96 20 -62"/></g><path d="M -7 -129 L 7 -129 L 4 -84 L -4 -84 Z" fill="#EFE4CF" opacity="0.92"/><g fill="#B88A34"><circle cx="0" cy="-116" r="1.5"/><circle cx="0" cy="-104" r="1.5"/><circle cx="0" cy="-92" r="1.5"/></g><path d="M -14 -130 L -4 -100 L -8 -84 M 14 -130 L 4 -100 L 8 -84" fill="none" stroke="#B88A34" stroke-width="1" opacity="0.8"/><path d="M -5 -128 L 0 -125 L -5 -122 Z M 5 -128 L 0 -125 L 5 -122 Z" fill="#E4B04A"/><rect x="-6" y="-141" width="12" height="11" fill="#4F3714" stroke="#2E1F0C" stroke-width="0.9"/><path d="M -26 -136 L -26 -158 A 26 26 0 0 1 26 -158 L 26 -136 Q 0 -131 -26 -136 Z" fill="url(#dome)" stroke="#150C05" stroke-width="1.9"/><path d="M -26 -136 L -26 -158 A 26 26 0 0 1 26 -158 L 26 -136 Q 0 -131 -26 -136 Z" fill="url(#hatch)" mask="url(#shade)"/><path d="M -26 -136 L -26 -158 A 26 26 0 0 1 26 -158 L 26 -136 Q 0 -131 -26 -136 Z" fill="url(#hatchB)" mask="url(#shadeDeep)"/><g clip-path="url(#clipCHead)" mask="url(#shade)" fill="none" stroke="#000" stroke-width="0.8" stroke-linecap="round" opacity="0.6"><path d="M -26 -150 Q 0 -160 26 -150"/><path d="M -26 -157 Q 0 -167 26 -157"/><path d="M -26 -164 Q 0 -174 26 -164"/><path d="M -26 -170 Q 0 -180 26 -170"/><path d="M -26 -175 Q 0 -185 26 -175"/></g><path d="M -26 -141 Q 0 -136 26 -141" fill="none" stroke="#3B2811" stroke-width="1.1"/><rect x="-21" y="-171" width="42" height="22" rx="11" fill="#140C07"/><circle cx="-9.5" cy="-158" r="12" fill="url(#eye)" opacity="0.8"/><circle cx="-9.5" cy="-158" r="6.6" fill="#FFF1CC"/><path d="M -16.1 -158 A 6.6 6.6 0 0 1 -2.9 -158 Z" fill="#140C07"/><circle cx="-11" cy="-155.6" r="2.5" fill="#1A0F06"/><circle cx="9.5" cy="-158" r="12" fill="url(#eye)" opacity="0.8"/><circle cx="9.5" cy="-158" r="6.6" fill="#FFF1CC"/><path d="M 2.9 -158 A 6.6 6.6 0 0 1 16.1 -158 Z" fill="#140C07"/><circle cx="8" cy="-155.6" r="2.5" fill="#1A0F06"/><path d="M -7 -144 H 7" stroke="#140C07" stroke-width="2" stroke-linecap="round"/><ellipse cx="-11" cy="-180" rx="8" ry="3" fill="#FFF3D0" opacity="0.28" transform="rotate(-24 -11 -180)"/></symbol>')
+
+
 def dashboard_robots():
-    """The chief dashboard's figures as SVG symbols: one seated robot per instrument, the conductor and the podium.
+    """The chief dashboard's figures as SVG symbols: one seated robot per instrument, the conductor, the podium and the
+    chief's front view (legs and torso, armless).
 
     The dashboard (skills/chief/dashboard.html) places them with <use href="#r-cello">, one per live agent; its
     server inlines this file into the page. Symbols keep the banner's own coordinates, so a robot's lamp sits at (9, -40)."""
@@ -848,6 +855,7 @@ def dashboard_robots():
     body, swing = conductor(0, 0, 1)
     parts.append('<symbol id="r-conductor" viewBox="-90 -200 180 210" overflow="visible">%s%s</symbol>' % (body, swing))
     parts.append('<symbol id="podium" viewBox="-80 0 160 62" overflow="visible">%s</symbol>' % podium(0, 0))
+    parts.extend((CHIEF_LEGS, CHIEF_TORSO))
     return ('<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true">%s%s</svg>\n'
             % (defs(1200, 460), "".join(parts)))
 

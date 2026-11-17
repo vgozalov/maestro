@@ -96,5 +96,4 @@ asked again. Use the paths exactly as written; do not assume any other layout.
 
 - Summarize: sprint folder path, number of tasks, and the source plan.
 - Do NOT commit unless the user asks. If they do, use a conventional commit
-  (`chore(sprints): ...`) and end the message with whatever commit trailer or
-  attribution the repo's instructions file requires. If it names none, add none.
+  (`chore(sprints): ...`).

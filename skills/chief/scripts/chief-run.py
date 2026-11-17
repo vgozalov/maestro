@@ -21,6 +21,7 @@ line, `Run: <run dir>   Task: <id>   Role: <role>`. Costs are API-equivalent est
 model-routing's prices.json, kept per provider.
 """
 import argparse
+import collections
 import errno
 import hashlib
 import glob
@@ -53,14 +54,14 @@ ROBOTS = SKILL_DIR / "robots.svg"  # drawn by assets/generate.py, the same robot
 FONTS = {name: SKILL_DIR / "fonts" / name for name in ("instrument-serif.woff2", "instrument-sans.woff2", "ibm-plex-mono.woff2")}
 
 PHASES = ["intake", "research", "plan", "plan-review", "approval", "implement", "review", "report", "paused", "done"]
-RUN_TAG = re.compile(r"Run:\s*(\S+)(?:\s+Task:\s*(\S+))?(?:\s+Role:\s*(\S+))?")
+RUN_TAG = re.compile(r"Run:[ \t]*(.+?)(?=[ \t]+(?:Task|Role):|[ \t\r]*$)(?:[ \t]+Task:[ \t]*(\S+))?(?:[ \t]+Role:[ \t]*(\S+))?", re.MULTILINE)
 STALE_SECONDS = 15 * 60
 QUIET_SECONDS = 2 * 3600  # an unfinished run with no agent working and no phase change for this long has gone quiet
 BUCKET_SECONDS = 600  # spend is kept in 10-minute buckets for the sparkline and the burn rate
 VERDICT = re.compile(r"^\W*(?:status\W*)?(DONE_WITH_CONCERNS|DONE|BLOCKED|FAILED|NEEDS_CONTEXT|APPROVED|CHANGES(?:_REQUESTED)?)\b", re.I)
 DEFAULT_DAYS = 14
 DASHBOARD_APP = "chief-dashboard"
-DASHBOARD_VERSION = 3  # a running dashboard older than this is replaced by the next run
+DASHBOARD_VERSION = 4  # a running dashboard older than this is replaced by the next run
 DEFAULT_PORT = int(os.environ.get("CHIEF_DASHBOARD_PORT") or 8765)
 AUTO_IDLE_HOURS = 6  # a dashboard the chief started exits after this long with no page open
 PROVIDERS = ("claude", "chatgpt")
@@ -172,7 +173,7 @@ def git_toplevel(cwd="."):
 # ---- starting a run and moving its phase ---------------------------------------------------
 
 
-def start_run(repo, text, title=None, source="chat", now=None):
+def start_run(repo, text, title=None, source="chat", now=None, session_id=None):
     if not text or not text.strip():
         raise ValueError("the task is empty: pass the request on stdin, with --file or with --issue")
     title = (title or text.strip().splitlines()[0]).strip()[:120]
@@ -198,6 +199,7 @@ def start_run(repo, text, title=None, source="chat", now=None):
     write_json(os.path.join(run_dir, "run.json"), {
         "id": run_id, "title": title, "source": source, "repo": repo, "started": started, "ended": None,
         "phase": "intake", "plan": None, "workspace": None,
+        "session_id": plain_session_id(session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")),
         "phases": [{"phase": "intake", "at": started, "usage": usage_snapshot()}],
     })
     try:
@@ -245,6 +247,8 @@ def set_phase(run_dir, phase, plan=None, workspace=None):
     state = load_run(run_dir)
     at = now_iso()
     state["phase"] = phase
+    if not state.get("session_id"):  # a run from before the id was recorded learns it at its next phase
+        state["session_id"] = plain_session_id(os.environ.get("CLAUDE_CODE_SESSION_ID"))
     state["phases"].append({"phase": phase, "at": at, "usage": usage_snapshot()})
     if plan:
         state["plan"] = plan
@@ -319,6 +323,12 @@ def price_codex(model, usage, prices):
 
 _TRANSCRIPTS = {}
 _SESSIONS = {}
+SESSION_ID = re.compile(r"^[A-Za-z0-9-]{1,80}$")
+
+
+def plain_session_id(value):
+    """The id when it is a plain session id, else None."""
+    return value if isinstance(value, str) and SESSION_ID.fullmatch(value) else None
 
 
 def prompt_text(entry):
@@ -337,7 +347,8 @@ def describe_tool(name, args):
     """One line for a tool call, as the dashboard's activity feed shows it."""
     args = args if isinstance(args, dict) else {}
     if name == "Bash":
-        return "Bash " + (args.get("description") or str(args.get("command") or "")).strip().splitlines()[0][:90] if (args.get("description") or args.get("command")) else "Bash"
+        lines = (str(args.get("description") or args.get("command") or "")).strip().splitlines()
+        return f"Bash {lines[0][:90]}" if lines else "Bash"
     if name in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit"):
         return f"{name} {short_path(args.get('file_path') or args.get('notebook_path') or '')}".strip()
     if name == "Grep":
@@ -360,10 +371,26 @@ def verdict_of(report):
     return match.group(1).upper() if match else None
 
 
+def cache_ttl(usage, written_ttl):
+    """(ttl of the latest cache write, ttl this message implies) for one message's usage, given the ttl of the writes before it.
+
+    A write names its ttl: 1 hour, else 5 minutes. A pure cache read writes nothing, so it does not say which ttl it
+    refreshed: it takes the latest write's, else 5 minutes. No cache tokens at all means caching is off: None."""
+    split = usage.get("cache_creation") or {}
+    if (split.get("ephemeral_1h_input_tokens") or 0) > 0:
+        return 3600, 3600
+    if (split.get("ephemeral_5m_input_tokens") or 0) > 0 or (usage.get("cache_creation_input_tokens") or 0) > 0:
+        return 300, 300
+    if (usage.get("cache_read_input_tokens") or 0) > 0:
+        return written_ttl, written_ttl or 300
+    return written_ttl, None
+
+
 def parse_messages(lines, prices, start=None, end=None, sidechain=None):
     """Usage, cost, recent tool calls, spend per 10 minutes and the last reply over a transcript's assistant messages."""
     messages, last_text, last_entry, first_at, last_at = {}, "", None, None, None
     acts, stamps = [], {}
+    last_cache, written_ttl = None, None  # the newest message's (time, ttl), and the ttl of the latest cache write
     for line in lines:
         try:
             entry = json.loads(line)
@@ -384,6 +411,8 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
         if message.get("usage") and message.get("id"):
             messages[message["id"]] = message
             stamps[message["id"]] = at
+            written_ttl, ttl = cache_ttl(message["usage"], written_ttl)
+            last_cache = (at, ttl)
         for block in message.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 acts.append([entry.get("timestamp"), describe_tool(block.get("name"), block.get("input"))])
@@ -391,7 +420,7 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
         if text:
             last_text = text
     tokens = {"input": 0, "output": 0, "cache_write_5m": 0, "cache_write_1h": 0, "cache_read": 0}
-    cost, unpriced, model, spend = 0.0, False, None, {}
+    cost, unpriced, model, spend, sizes = 0.0, False, None, {}, []
     for message_id, message in messages.items():
         usage = message["usage"]
         split = usage.get("cache_creation") or {}
@@ -401,6 +430,8 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
         tokens["cache_read"] += usage.get("cache_read_input_tokens", 0) or 0
         tokens["cache_write_1h"] += write_1h
         tokens["cache_write_5m"] += (usage.get("cache_creation_input_tokens", 0) or 0) - write_1h
+        sizes.append((usage.get("input_tokens", 0) or 0) + (usage.get("cache_read_input_tokens", 0) or 0)
+                     + (usage.get("cache_creation_input_tokens", 0) or 0))
         model = message.get("model") or model
         price = price_claude(message.get("model"), usage, prices)
         if price is None:
@@ -412,9 +443,11 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
                 spend[bucket] = spend.get(bucket, 0.0) + price
     done = bool(last_entry and last_entry.get("type") == "assistant"
                 and (last_entry.get("message") or {}).get("stop_reason") == "end_turn")
+    context = {"last": sizes[-1], "peak": max(sizes)} if sizes else None
+    cache = {"last_at": int(last_cache[0]), "ttl_s": last_cache[1]} if last_cache and last_cache[0] is not None else None
     return {"tokens": tokens, "cost_usd": None if unpriced else round(cost, 6), "model": model,
             "report": last_text[-6000:], "started": first_at, "ended": last_at if done else None, "done": done,
-            "acts": [act for act in reversed(acts[-6:])], "spend": spend}
+            "acts": [act for act in reversed(acts[-6:])], "spend": spend, "context": context, "cache": cache}
 
 
 def parse_subagent(path, prices):
@@ -476,7 +509,9 @@ def claude_agents(config_dir, runs, prices):
                     "description": parsed["description"], "status": status, "started": parsed["started"],
                     "ended": parsed["ended"], "tokens": parsed["tokens"], "cost_usd": parsed["cost_usd"],
                     "report": parsed["report"], "verdict": verdict, "acts": parsed["acts"], "active": mtime,
-                    "_spend": parsed["spend"]})
+                    "context": parsed["context"], "_spend": parsed["spend"],
+                    "session_id": os.path.basename(os.path.dirname(os.path.dirname(path))),
+                    "agent_id": os.path.basename(path)[len("agent-"): -len(".jsonl")], "_transcript": path})
                 break
     for run in runs:
         chief = chief_session(config_dir, run, prices, since)
@@ -486,38 +521,100 @@ def claude_agents(config_dir, runs, prices):
 
 
 def session_text(path):
-    """A main session's transcript, or None when it never started a run; remembered per version."""
+    """A main session's transcript, or None when it never started a run; remembered until the file changes."""
     stat = os.stat(path)
-    key = (path, stat.st_mtime, stat.st_size)
-    if key not in _SESSIONS:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            text = handle.read()
-        _SESSIONS[key] = text if "chief-run.py start" in text else None
-    return _SESSIONS[key]
+    cached = _SESSIONS.get(path)
+    if cached and cached[:2] == (stat.st_mtime, stat.st_size):
+        return cached[2]
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    text = text if "chief-run.py start" in text else None  # never keep a transcript that is not ours
+    _SESSIONS[path] = (stat.st_mtime, stat.st_size, text)
+    return text
+
+
+def session_transcript(config_dir, session_id):
+    """The main-session transcript for a session id, or None; an id that is not plain is never globbed."""
+    if not plain_session_id(session_id):
+        return None
+    matches = sorted(glob.glob(os.path.join(glob.escape(config_dir), "projects", "*", session_id + ".jsonl")))
+    return matches[0] if matches else None
+
+
+def jsonl_records(text, *markers):
+    """The JSON records of the lines containing any marker; lines that do not parse are skipped."""
+    for line in text.splitlines():
+        if any(marker in line for marker in markers):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                yield record
+
+
+def chat_title(text):
+    """The chat's title: the last non-empty custom title, else the last AI-written one."""
+    custom = ai = None
+    for record in jsonl_records(text, "custom-title", "ai-title"):
+        kind = record.get("type")
+        if kind not in ("custom-title", "ai-title"):
+            continue
+        value = record.get("customTitle" if kind == "custom-title" else "aiTitle")
+        if isinstance(value, str) and value.strip():
+            if kind == "custom-title":
+                custom = value.strip()
+            else:
+                ai = value.strip()
+    return custom or ai
+
+
+def session_cwd(text):
+    """The folder the session ran in: the cwd of its first record that has one."""
+    for record in jsonl_records(text, '"cwd"'):
+        if isinstance(record.get("cwd"), str) and record["cwd"]:
+            return record["cwd"]
+    return None
 
 
 def chief_session(config_dir, run, prices, since):
     """The chief session.s own tokens: the main session that started this run, inside the run's time."""
     start = parse_time(run["started"])
     end = parse_time(run.get("ended"))
-    for path in glob.glob(os.path.join(config_dir, "projects", "*", "*.jsonl")):
+    found = None
+    recorded = session_transcript(config_dir, run.get("session_id"))
+    if recorded:
         try:
-            if os.path.getmtime(path) < since:
-                continue
-            text = session_text(path)
+            text = session_text(recorded)
         except OSError:
-            continue
-        if not text or run["id"] not in text:
-            continue
-        parsed = parse_messages(text.splitlines(), prices, start=start - 120, end=end, sidechain=False)
-        mtime = os.path.getmtime(path)
-        status = "done" if run.get("ended") else ("running" if time.time() - mtime < STALE_SECONDS else "stopped")
-        return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
-                "description": "the chief session", "status": status,
-                "started": run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
-                "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
-                "active": mtime, "_spend": parsed["spend"]}
-    return None
+            text = None
+        if text and run["id"] in text:
+            found = (recorded, text, True)
+    if not found:
+        for path in glob.glob(os.path.join(config_dir, "projects", "*", "*.jsonl")):
+            try:
+                if os.path.getmtime(path) < since:
+                    continue
+                text = session_text(path)
+            except OSError:
+                continue
+            if text and run["id"] in text:
+                found = (path, text, run["dir"] in text)  # an id alone is a loose match
+                break
+    if not found:
+        return None
+    path, text, sure = found
+    parsed = parse_messages(text.splitlines(), prices, start=start - 120, end=end, sidechain=False)
+    mtime = os.path.getmtime(path)
+    status = "done" if run.get("ended") else ("running" if time.time() - mtime < STALE_SECONDS else "stopped")
+    return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
+            "description": "the chief session", "status": status,
+            "started": run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
+            "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
+            "active": mtime, "context": parsed["context"], "_spend": parsed["spend"],
+            "cache": None if run.get("ended") else parsed["cache"],
+            "session_id": os.path.basename(path)[: -len(".jsonl")], "chat_title": chat_title(text),
+            "cwd": session_cwd(text), "_transcript": path if sure else None}
 
 
 # ---- Codex agents, from run-codex-job.py's records ----------------------------------------
@@ -572,6 +669,14 @@ def codex_acts(log_path, limit=6):
     return acts, mtime
 
 
+def inside(folder, path):
+    """Whether path is a real location within folder."""
+    if not isinstance(path, str) or not path:
+        return False
+    root = os.path.realpath(folder)
+    return os.path.commonpath([root, os.path.realpath(path)]) == root
+
+
 def codex_agents(run_dir, prices):
     agents = []
     for path in sorted(glob.glob(os.path.join(run_dir, "agents", "codex-*.json"))):
@@ -589,6 +694,7 @@ def codex_agents(run_dir, prices):
         elif verdict == "FAILED" or status == "failed":
             status = "failed"
         acts, active = codex_acts(record.get("log"))
+        log = record.get("log")
         cost = price_codex(record.get("model"), record.get("usage"), prices)
         when = parse_time(record.get("ended") or record.get("started"))
         spend = {int(when // BUCKET_SECONDS): cost} if cost and when else {}
@@ -599,7 +705,8 @@ def codex_agents(run_dir, prices):
             "ended": record.get("ended"), "thread_id": record.get("thread_id"), "resumed": bool(record.get("resumed")),
             "tokens": {key: usage.get(key, 0) or 0 for key in ("input", "cached", "output", "reasoning")},
             "cost_usd": cost, "report": report[-6000:], "verdict": verdict, "acts": acts,
-            "active": active or parse_time(record.get("ended") or record.get("started")), "_spend": spend})
+            "active": active or parse_time(record.get("ended") or record.get("started")), "context": None, "_spend": spend,
+            "_transcript": log if inside(run_dir, log) else None})
     latest = {}
     for agent in agents:
         if agent["thread_id"]:
@@ -831,6 +938,10 @@ def build_cards(runs, config_dir=None, prices=None):
             agent["kind"] = role_kind(agent["role"])
         card = {key: run.get(key) for key in ("key", "id", "title", "source", "phase", "phases", "started", "ended",
                                               "plan", "workspace", "dir", "repo", "archived")}
+        chief_row = next((agent for agent in agents if agent["id"] == "chief"), None) or {}
+        card.update(session_id=chief_row.get("session_id") or plain_session_id(run.get("session_id")),
+                    chat_title=chief_row.get("chat_title"), cwd=chief_row.get("cwd") or run.get("repo"),
+                    cache=chief_row.get("cache"))
         last = max([parse_time(entry.get("at")) or 0 for entry in run.get("phases") or []]
                    + [agent.get("active") or 0 for agent in agents] + [parse_time(run.get("started")) or 0])
         working = any(agent["status"] == "running" and agent["kind"] != "chief" for agent in agents)
@@ -878,6 +989,7 @@ def build_board(repo=None, config_dir=None, prices=None, with_git=True, days=Non
     spend = spend_summary(agents, archived_total)
     for agent in agents:
         agent.pop("_spend", None)
+        agent["has_transcript"] = bool(agent.pop("_transcript", None))
     repos = []
     for path in dict.fromkeys(card["repo"] for card in cards):
         state = (git or git_state)(path) if with_git else None
@@ -973,6 +1085,69 @@ def resolve_file(run, name):
     return path if path.startswith(os.path.realpath(repo) + os.sep) and os.path.isfile(path) else None
 
 
+def resolve_transcript(run, agent_id, config_dir=None, prices=None):
+    """The transcript of an agent this run knows by id, or None. The id is looked up in the board's own agents,
+    never turned into a path, and the path is checked against the allowed folders here, at serve time."""
+    if not run or not agent_id:
+        return None
+    agent = next((row for row in build_cards([run], config_dir, prices)[0]["agents"] if row["id"] == agent_id), None)
+    path = agent.get("_transcript") if agent else None
+    if not isinstance(path, str) or not path:
+        return None
+    real = os.path.realpath(path)
+    projects = os.path.join(os.path.realpath(config_dir or default_config_dir()), "projects")
+    if os.path.isfile(real) and (inside(projects, real) or inside(run["dir"], real)):
+        return real
+    return None
+
+
+def tool_result_text(content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+    return " ".join(str(block.get("text", "")) for block in content if isinstance(block, dict))
+
+
+def render_entry(entry, line):
+    """One transcript record as text, or None when it has nothing to show."""
+    message = entry.get("message")
+    if message is None:
+        return f"[{entry.get('type') or '?'}] {line.strip()[:2000]}"
+    if entry.get("type") not in ("user", "assistant") or not isinstance(message, dict):
+        return None
+    parts = [f"[{entry.get('timestamp') or ''}] {entry['type']}"]
+    content = message.get("content")
+    for item in [{"type": "text", "text": content}] if isinstance(content, str) else content or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            parts.append(str(item.get("text") or "")[:4000])
+        elif item.get("type") == "tool_use":
+            parts.append("→ " + describe_tool(item.get("name"), item.get("input")))
+        elif item.get("type") == "tool_result":
+            parts.append(tool_result_text(item.get("content"))[:2000])
+    return "\n".join(parts)
+
+
+def render_transcript(path, limit=300):
+    """A transcript as plain text, the last `limit` entries, each tool call on one line. A record that
+    cannot be rendered is skipped, never fatal."""
+    blocks, total = collections.deque(maxlen=limit), 0
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                entry = json.loads(line)
+                block = render_entry(entry, line) if isinstance(entry, dict) else None
+            except Exception:
+                continue
+            if block is not None:
+                blocks.append(block)
+                total += 1
+    omitted = total - len(blocks)
+    return "\n\n".join(([f"… {omitted} earlier entries omitted"] if omitted else []) + list(blocks))
+
+
 # ---- the dashboard server ------------------------------------------------------------------
 
 
@@ -990,6 +1165,19 @@ def refresh_usage_forever(minutes):
         except Exception:
             pass
         time.sleep(60)
+
+
+def host_allowed(handler):
+    port = handler.server.server_port
+    return handler.headers.get("Host") in (f"127.0.0.1:{port}", f"localhost:{port}")
+
+
+def request_allowed(handler, data):
+    """Whether a GET may be answered: the Host names this server (a rebinding page carries its own host), and
+    for data the page's own header, which another site cannot add without a CORS preflight this server never answers."""
+    if not host_allowed(handler):
+        return False
+    return not data or handler.headers.get("X-Chief-Dashboard") == "1"
 
 
 class DashboardServer(http.server.ThreadingHTTPServer):
@@ -1132,6 +1320,13 @@ def serve(repo, port, refresh_minutes=5, days=DEFAULT_DAYS, idle_hours=0):
 
         def do_GET(self):
             url = urllib.parse.urlparse(self.path)
+            data = url.path in ("/board.json", "/file", "/transcript")
+            if not request_allowed(self, data):
+                if not host_allowed(self):
+                    body = f"Open the dashboard at http://127.0.0.1:{self.server.server_port}/ — this host name is not allowed."
+                else:
+                    body = "This page is out of date — reload it."
+                return self.send(403, body, "text/plain; charset=utf-8")
             if url.path != "/health":
                 last_request["at"] = time.time()
             if url.path in ("/", "/index.html"):
@@ -1162,6 +1357,17 @@ def serve(repo, port, refresh_minutes=5, days=DEFAULT_DAYS, idle_hours=0):
                     return self.send(404, "not found", "text/plain; charset=utf-8")
                 with open(path, encoding="utf-8", errors="replace") as handle:
                     return self.send(200, handle.read(), "text/plain; charset=utf-8")
+            if url.path == "/transcript":
+                query = urllib.parse.parse_qs(url.query)
+                run = find_run(list_runs(repo), (query.get("run") or [""])[0])
+                path = resolve_transcript(run, (query.get("agent") or [""])[0])
+                if not path:
+                    return self.send(404, "not found", "text/plain; charset=utf-8")
+                try:
+                    text = render_transcript(path)
+                except OSError:
+                    return self.send(404, "not found", "text/plain; charset=utf-8")
+                return self.send(200, text, "text/plain; charset=utf-8")
             return self.send(404, "not found", "text/plain; charset=utf-8")
 
         def do_POST(self):
