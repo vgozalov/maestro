@@ -74,15 +74,17 @@ class Workspace(unittest.TestCase):
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
         return path
 
-    def transcript(self, name, prompt, messages, done=True, model_alias="sonnet"):
-        lines = [{"type": "user", "timestamp": "2026-11-12T10:00:00.000Z", "message": {"role": "user", "content": prompt}}]
+    def transcript(self, name, prompt, messages, done=True, model_alias="sonnet", base=None):
+        base = chief.parse_time("2026-11-12T10:00:00.000Z") if base is None else base
+        stamp = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        lines = [{"type": "user", "timestamp": stamp(base), "message": {"role": "user", "content": prompt}}]
         for index, (model, usage) in enumerate(messages):
             message = {"id": f"msg_{name}_{index}", "model": model, "role": "assistant", "usage": usage,
                        "stop_reason": "end_turn" if done and index == len(messages) - 1 else "tool_use",
                        "content": [{"type": "text", "text": f"DONE from {name}"}]}
             # Streaming writes the same message id more than once; only the last copy counts.
-            lines.append({"type": "assistant", "timestamp": f"2026-11-12T10:0{index + 1}:00.000Z", "message": dict(message, usage={**usage, "output_tokens": 1})})
-            lines.append({"type": "assistant", "timestamp": f"2026-11-12T10:0{index + 1}:30.000Z", "message": message})
+            lines.append({"type": "assistant", "timestamp": stamp(base + 60 * (index + 1)), "message": dict(message, usage={**usage, "output_tokens": 1})})
+            lines.append({"type": "assistant", "timestamp": stamp(base + 60 * (index + 1) + 30), "message": message})
         (self.projects / f"agent-{name}.jsonl").write_text("\n".join(json.dumps(line) for line in lines) + "\n")
         (self.projects / f"agent-{name}.meta.json").write_text(json.dumps({"agentType": "general-purpose", "description": f"{name} job", "model": model_alias}))
 
@@ -771,12 +773,67 @@ class PlanTasksTest(Workspace):
         (self.repo / "ws" / "progress.md").write_text("Task 1: complete\nTask 2: dispatched\n")
         run = self.start(title="X")
         chief.set_phase(str(run), "implement", plan="plan.md", workspace="ws")
-        self.transcript("rev", f"Run: {run}   Task: 2   Role: reviewer", [("claude-opus-5-5", {"input_tokens": 10, "output_tokens": 10})], done=False)
+        self.transcript("rev", f"Run: {run}   Task: 2   Role: reviewer", [("claude-opus-5-5", {"input_tokens": 10, "output_tokens": 10})], done=False, base=time.time() - 120)
         tasks = {t["id"]: t["status"] for t in self.board()["runs"][0]["tasks"]}
         self.assertEqual(tasks, {"1": "done", "2": "review", "3": "queued"})
 
 
+class LastMessageTest(Workspace):
+    def test_trailing_metadata_is_not_activity(self):
+        lines = [json.dumps(r) for r in [
+            {"type": "user", "timestamp": "2026-11-17T15:49:17.097Z", "message": {"role": "user", "content": "hi"}},
+            {"type": "assistant", "timestamp": "2026-11-17T15:49:25.594Z", "message": {"id": "m", "role": "assistant", "content": []}},
+            {"type": "system", "subtype": "stop_hook_summary", "timestamp": "2026-11-17T15:49:25.632Z"},
+            {"type": "api-request", "timestamp": "2026-11-17T15:50:00Z"},
+            {"type": "queue-operation", "timestamp": "2026-11-17T15:51:00Z"},
+            {"type": "last-prompt"}, {"type": "cost-state"}, {"type": "tools-used"},
+        ]]
+        self.assertEqual(chief.parse_messages(lines, PRICES)["last_at"], "2026-11-17T15:49:25.594Z")
+        self.assertIsNone(chief.parse_messages([json.dumps({"type": "last-prompt"})], PRICES)["last_at"])
+
+    def test_no_timestamped_message_falls_back_to_the_mtime(self):
+        run = self.start(title="X")
+        path = self.projects / "agent-bare.jsonl"
+        path.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": f"Run: {run}   Task: 1   Role: implement"}}) + "\n"
+                        + json.dumps({"type": "tools-used", "tools": []}) + "\n")
+        os.utime(path, (time.time() - 60, time.time() - 60))
+        row = self.board()["runs"][0]["agents"][0]
+        self.assertAlmostEqual(row["active"], os.path.getmtime(path), places=3)
+        self.assertEqual(row["status"], "running")
+
+    def test_a_subagent_is_stale_from_its_last_message_not_its_mtime(self):
+        run = self.start(title="X")
+        usage = [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})]
+        self.transcript("old", f"Run: {run}   Task: 1   Role: implement", usage, done=False, base=time.time() - 3600)
+        with open(self.projects / "agent-old.jsonl", "a") as handle:
+            handle.write(json.dumps({"type": "tools-used", "tools": []}) + "\n")  # bumps the mtime to now
+        self.transcript("new", f"Run: {run}   Task: 2   Role: implement", usage, done=False, base=time.time() - 120)
+        status = {a["id"]: a["status"] for a in self.board()["runs"][0]["agents"]}
+        self.assertEqual((status["claude-old"], status["claude-new"]), ("stopped", "running"))
+
+
 class SpendAndQuietTest(Workspace):
+    def test_a_stopped_chief_session_goes_quiet_despite_trailing_records(self):
+        run = self.start(title="Abandoned")
+        state = json.loads((run / "run.json").read_text())
+        state["started"] = state["phases"][0]["at"] = "2026-01-01T00:00:00Z"
+        state["session_id"] = "stop0001"
+        (run / "run.json").write_text(json.dumps(state))
+        base = {"sessionId": "stop0001", "isSidechain": False}
+        records = [
+            {**base, "type": "user", "timestamp": "2026-01-01T00:00:10Z", "message": {"role": "user", "content": f"/chief {run}"}},
+            {**base, "type": "assistant", "timestamp": "2026-01-01T00:00:20Z", "message": {"id": "m1", "model": "claude-opus-5-5", "role": "assistant",
+                "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": [{"type": "text", "text": "chief-run.py start"}]}},
+            {**base, "type": "system", "subtype": "stop_hook_summary", "timestamp": "2026-01-01T00:00:21Z"},
+            {"type": "last-prompt", "sessionId": "stop0001"}, {"type": "cost-state", "sessionId": "stop0001"}, {"type": "tools-used", "sessionId": "stop0001"},
+        ]
+        (self.config / "projects" / "-repo" / "stop0001.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")  # mtime is now
+        card = self.board()["runs"][0]
+        row = next(a for a in card["agents"] if a["id"] == "chief")
+        self.assertEqual(row["status"], "stopped")
+        self.assertTrue(card["quiet"])
+        self.assertEqual(card["last_activity"], "2026-01-01T00:00:20Z")
+
     def test_spend_has_24_hours_of_buckets_and_a_burn_rate(self):
         now = time.time()
         bucket = int(now // chief.BUCKET_SECONDS)
@@ -812,6 +869,24 @@ class ArchiveTest(Workspace):
         chief.archive_runs(str(self.repo), [done.name], archived=False)
         self.assertEqual(len(self.board()["runs"]), 2)
 
+    def test_an_archived_run_still_working_counts_its_current_spend(self):
+        run = self.start(title="Busy")
+        self.codex_record(run, "first")
+        chief.archive_runs(str(self.repo), [run.name], config_dir=str(self.config), prices=PRICES)
+        self.assertAlmostEqual(self.board()["spend"]["all_runs"], 0.078, places=3)
+        self.codex_record(run, "second")  # spend that arrives after the archive
+        board = self.board()
+        self.assertAlmostEqual(board["spend"]["all_runs"], 0.156, places=3)
+        self.assertEqual(board["runs"], [])
+
+    def test_an_archived_run_that_finishes_counts_the_spend_added_after_the_archive(self):
+        run = self.start(title="Busy")
+        self.codex_record(run, "first")
+        chief.archive_runs(str(self.repo), [run.name], config_dir=str(self.config), prices=PRICES)
+        self.codex_record(run, "second")  # spend that arrives after the archive
+        chief.set_phase(str(run), "done", config_dir=str(self.config), prices=PRICES)
+        self.assertAlmostEqual(self.board()["spend"]["all_runs"], 0.156, places=3)
+
     def test_archive_state_survives_re_registering(self):
         run = self.start(title="X")
         chief.archive_runs(str(self.repo), [run.name], config_dir=str(self.config), prices=PRICES)
@@ -844,6 +919,29 @@ class ArchiveTest(Workspace):
         out = subprocess.run([sys.executable, "-B", str(SCRIPT), "archive", "--done"], cwd=self.repo, env=env, capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(json.loads(out.stdout)["archived"], [chief.list_runs(str(self.repo))[0]["key"]])
+
+
+class ArchiveDoneFlagTest(Workspace):
+    def archive_cli(self, *args):
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.config), "CHIEF_DASHBOARD": "off"}
+        return subprocess.run([sys.executable, "-B", str(SCRIPT), "archive", *args], cwd=self.repo, env=env, capture_output=True, text=True)
+
+    def test_done_with_named_runs_is_refused_and_archives_nothing(self):
+        finished, named = self.start(title="Finished"), self.start(title="Named")
+        chief.set_phase(str(finished), "done")
+        out = self.archive_cli(named.name, "--done")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertEqual(out.stdout, "")
+        self.assertEqual(out.stderr.strip(), "chief-run: --done archives every finished run; run it on its own, without run names")
+        self.assertEqual([r["archived"] for r in chief.list_runs(str(self.repo))], [None, None])
+
+    def test_a_bare_done_still_sweeps_every_finished_run(self):
+        finished, live = self.start(title="Finished"), self.start(title="Live")
+        chief.set_phase(str(finished), "done")
+        out = self.archive_cli("--done")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(len(json.loads(out.stdout)["archived"]), 1)
+        self.assertEqual([r["title"] for r in self.board()["runs"]], ["Live"])
 
 
 class RenderTranscriptTest(unittest.TestCase):

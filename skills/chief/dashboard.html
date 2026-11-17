@@ -1240,9 +1240,9 @@ function renderScore({ force = false } = {}) {
     .concat([['.table-wrap', 'scrollLeft', [...document.querySelectorAll('.table-wrap')].map((el) => el.scrollLeft)]])
   const closeFocused = document.activeElement && document.activeElement.id === 'close'
   const focused = document.activeElement && document.activeElement.matches && document.activeElement.matches('tr[data-agent]') ? document.activeElement.dataset.agent : null
-  const archivable = r.phase === 'done' || r.phase === 'paused' || r.quiet || r.archived
+  const working = live(r).length
   const action = r.archived ? `<button class="close" type="button" data-archive="restore">restore</button>`
-    : archivable ? `<button class="close" type="button" data-archive="archive">archive</button>` : ''
+    : `<button class="close" type="button" data-archive="archive">${working ? `archive (${working} working)` : 'archive'}</button>`
   $('score').innerHTML = `
     <div class="s-head"><div><span class="label">${esc(r.source)} · ${esc(r.phase)}${r.quiet ? ` · quiet for ${dur(r.last_activity)}` : ''}${r.archived ? ' · archived' : ''}</span><h2 id="s-title">${esc(r.title)}</h2>
       <div class="meta"><b title="${esc(r.repo)}">${esc(repoName(r.repo))}</b><span>${esc(r.id)}</span><span>${dur(r.started, r.ended)}</span><span>${players(r).length} players</span>${cacheBadge(r)}</div></div>
