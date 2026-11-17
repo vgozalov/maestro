@@ -121,7 +121,7 @@ git push -u origin <feature-branch>
 Then create the pull/merge request against <base-branch> with the forge's
 tooling — its CLI if one is available, or the creation URL most forges
 print when you push — following the repo's PR template and conventions if
-present, and report the URL to your human partner. Commit as the repo's configured git user only: never set a model as author or committer, and never add Co-Authored-By, "Generated with", or any Claude, ChatGPT, Codex or other model attribution to a commit message or PR body.
+present, and report the URL to your human partner. Commits and PRs: the repo's git user only; no model author, Co-Authored-By or AI attribution.
 
 Keep the worktree — your human partner iterates on PR feedback there.
 
