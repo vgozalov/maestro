@@ -323,5 +323,71 @@ class ContextTest(unittest.TestCase):
         self.assertIn("(peak 120k)", html)
 
 
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class SessionTest(unittest.TestCase):
+    CHIEF = {"id": "chief", "kind": "chief", "role": "chief", "task": "-", "provider": "claude", "model": "claude-opus-5-5",
+             "status": "running", "session_id": "1a2b3c4d-aaaa", "has_transcript": True, "acts": []}
+    WORKER = {"id": "claude-w1", "kind": "implement", "role": "implement", "task": "2", "provider": "claude", "model": "claude-sonnet-5-5",
+              "status": "running", "session_id": "1a2b3c4d-aaaa", "agent_id": "w1", "has_transcript": True, "acts": []}
+
+    def programme(self, runs):
+        return run_page(f"active = {json.dumps(sample_board(runs))}; renderProgramme(); return $('prog').innerHTML")
+
+    def score(self, agent_id, **run):
+        board = sample_board([sample_run(agents=[self.CHIEF, self.WORKER], **run)])
+        return run_page(f"active = {json.dumps(board)}; openKey = 'r1@abc'; openAgent = '{agent_id}'; renderScore({{ force: true }}); return $('score').innerHTML")
+
+    def test_cards_from_one_chat_are_marked_as_siblings(self):
+        html = self.programme([sample_run(key="a@x", session_id="1a2b3c4d-aaaa"),
+                               sample_run(key="b@x", session_id="1a2b3c4d-aaaa", title="Follow-up"),
+                               sample_run(key="c@x", session_id="99999999-bbbb")])
+        self.assertEqual(html.count("1a2b3c4d · 2 runs"), 2)
+        self.assertIn("◆ 99999999", html)
+        self.assertNotIn("99999999 · ", html)
+
+    def test_session_counts_cover_the_given_runs(self):
+        self.assertEqual(run_page("return sessionCounts([{session_id: 'a'}, {session_id: 'a'}, {session_id: 'b'}, {session_id: null}])"),
+                         {"a": 2, "b": 1})
+
+    def test_siblings_share_a_color(self):
+        html = self.programme([sample_run(key="a@x", session_id="1a2b3c4d-aaaa"), sample_run(key="b@x", session_id="1a2b3c4d-aaaa")])
+        colors = re.findall(r'--sess:(#[0-9A-Fa-f]{6})', html)
+        self.assertEqual(len(colors), 2)
+        self.assertEqual(colors[0], colors[1])
+
+    def test_a_run_without_a_session_has_no_badge(self):
+        self.assertNotIn('class="sess', self.programme([sample_run(session_id=None)]))
+
+    def test_a_differing_chat_title_is_shown(self):
+        self.assertIn("chat: Fix filed issues", self.programme([sample_run(session_id="1a2b3c4d", chat_title="Fix filed issues")]))
+        self.assertNotIn("chat: ", self.programme([sample_run(session_id="1a2b3c4d", chat_title="CSV export")]))
+
+    def test_chat_title_and_session_are_escaped(self):
+        html = self.programme([sample_run(session_id='1"><b>x', chat_title="<img src=x onerror=1>")])
+        self.assertNotIn("<img", html)
+        self.assertNotIn('"><b>', html)
+
+    def test_resume_command_quotes_the_cwd(self):
+        self.assertEqual(run_page("return resumeCommand({cwd: \"/a/My Project/it's\"}, 'abc')"),
+                         "cd '/a/My Project/it'\\''s' && claude --resume abc")
+        self.assertEqual(run_page("return resumeCommand({cwd: null, repo: '/r'}, 'abc')"), "cd '/r' && claude --resume abc")
+
+    def test_the_chief_row_links_to_its_chat(self):
+        html = self.score("chief", cwd="/x/My repo")
+        self.assertIn("vscode://anthropic.claude-code/open?session=1a2b3c4d-aaaa", html)
+        self.assertIn("claude --resume 1a2b3c4d-aaaa", html)
+        self.assertIn('data-transcript="chief"', html)
+
+    def test_a_running_worker_says_how_to_steer_it(self):
+        html = self.score("claude-w1")
+        self.assertIn("SendMessage to w1", html)
+        self.assertIn('data-transcript="claude-w1"', html)
+        self.assertNotIn("vscode://", html)
+
+    def test_the_transcript_is_fetched_with_the_header(self):
+        sent = run_page("loadTranscript('r1@abc', 'claude-w1'); return __fetches.filter(([u]) => u.startsWith('/transcript')).map(([u, i]) => [u, i.headers['X-Chief-Dashboard']])")
+        self.assertEqual(sent, [["/transcript?run=r1%40abc&agent=claude-w1", "1"]])
+
+
 if __name__ == "__main__":
     unittest.main()

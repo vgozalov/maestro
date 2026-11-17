@@ -194,6 +194,11 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
 .acts div { display: grid; grid-template-columns: 48px 1fr; gap: 8px; color: var(--muted); }
 .acts div span:last-child { color: var(--cream); overflow-wrap: anywhere; }
 .files { display: flex; gap: 8px; flex-wrap: wrap; }
+.sess { flex: none; color: var(--sess, var(--muted)); white-space: nowrap; }
+.sess.shared { padding: 1px 6px; border: 1px solid var(--sess); border-radius: 8px; }
+.links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.links code { flex: 1 1 100%; font: 12px/1.5 var(--f-mono); background: #0E0805; border: 1.5px solid var(--line); border-radius: 10px; padding: 8px 10px; overflow-wrap: anywhere; user-select: all; }
+.links a.chip { text-decoration: none; }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 @media (max-width: 1100px) {
@@ -257,7 +262,8 @@ const NOTE_SHAPES = [
 ]
 const params = new URLSearchParams(location.search)
 let active = null, archived = null, view = 'active', filter = params.get('repo') || null
-let openKey = null, openAgent = null, openFile = null, confirmDone = false, linkedOnce = false
+let openKey = null, openAgent = null, openFile = null, openTranscript = null, confirmDone = false, linkedOnce = false
+let sessionTotals = {}
 let lastActive = '', lastArchived = ''
 let pointerDown = false, pointerDownAt = 0, lastInteract = 0, pendingScore = false, lastScoreSig = ''
 const DASH_HEADERS = { 'X-Chief-Dashboard': '1' }
@@ -453,13 +459,28 @@ function roleMix(r) {
   players(r).forEach((a) => { c[a.kind] = (c[a.kind] || 0) + 1 })
   return ORDER.filter((k) => c[k]).map((k) => `${k} <b>${c[k]}</b>`).join(' · ')
 }
+const SESSION_COLORS = ['#E4B04A', '#74B9A7', '#D4703C', '#F3D58F', '#9FD4C5', '#B3A285']
+const sessionHue = (id) => [...String(id)].reduce((s, ch) => s + ch.charCodeAt(0), 0) % SESSION_COLORS.length
+function sessionCounts(runs) {
+  const n = {}
+  runs.forEach((r) => { if (r.session_id) n[r.session_id] = (n[r.session_id] || 0) + 1 })
+  return n
+}
+const shellQuote = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'"
+const resumeCommand = (run, sessionId) => `cd ${shellQuote(run.cwd || run.repo)} && claude --resume ${sessionId}`
+function sessionBadge(r) {
+  if (!r.session_id) return ''
+  const n = sessionTotals[r.session_id] || 1
+  return `<span class="sess${n > 1 ? ' shared' : ''}" style="--sess:${SESSION_COLORS[sessionHue(r.session_id)]}" title="chat session ${esc(r.session_id)}">◆ ${esc(String(r.session_id).slice(0, 8))}${n > 1 ? ` · ${n} runs` : ''}</span>`
+}
 function card(r) {
   const done = r.phase === 'done', L = live(r), blocked = stuck(r).length
   const c = cost(r, 'claude'), g = cost(r, 'chatgpt'), t = c + g
   const tasks = r.tasks || []
   return `<button class="card slip ${done ? 'done' : ''} ${r.quiet ? 'quiet' : ''}" type="button" data-run="${esc(r.key)}">
-    <div class="where"><span title="${esc(r.repo)}">${esc(repoName(r.repo))} · ${esc(r.source)}</span><span>${dur(r.started, r.ended)}</span></div>
+    <div class="where"><span title="${esc(r.repo)}">${esc(repoName(r.repo))} · ${esc(r.source)}</span><span>${dur(r.started, r.ended)}</span>${sessionBadge(r)}</div>
     <h3>${esc(r.title)}</h3>
+    ${r.chat_title && r.chat_title !== r.title ? `<div class="mix">chat: ${esc(r.chat_title)}</div>` : ''}
     ${cardStaff(r)}
     <div class="stats"><span class="count">${players(r).length}<small>players</small></span>
       ${L.length ? `<span class="flag live"><span class="bulb"></span>${L.length} playing</span>` : ''}
@@ -473,6 +494,7 @@ function card(r) {
 function renderProgramme() {
   const runs = visible()
   if (!board()) return
+  sessionTotals = sessionCounts(runs)
   if (!runs.length) {
     $('prog').innerHTML = `<p class="empty" style="flex:1">${view === 'archived' ? 'Nothing archived yet.' : 'No runs yet. Start one with /chief and a task.'}</p>`
     return
@@ -576,11 +598,21 @@ function renderScore({ force = false } = {}) {
       <div style="margin-top:6px"><span class="state ${esc(sel.status)}"><span class="bulb"></span>${esc(String(sel.status).replace('_', ' '))}${sel.verdict ? ' · ' + esc(sel.verdict.toLowerCase().replace(/_/g, ' ')) : ''}</span></div>
       ${sel.description ? `<div class="mix" style="margin-top:4px">${esc(sel.description)}</div>` : ''}</div></div>
       ${(sel.acts || []).length ? `<div><div class="label" style="margin-bottom:6px">${lit ? 'now playing' : 'last tool calls'}</div><div class="acts">${sel.acts.map(([t, w]) => `<div><span>${esc(ago(t))}</span><span>${esc(w)}</span></div>`).join('')}</div></div>` : ''}
+      ${sel.kind === 'chief' && sel.session_id ? (() => {
+        const command = resumeCommand(r, sel.session_id)
+        return `<div class="links"><code>${esc(command)}</code>
+          <button class="chip" type="button" data-copy="${esc(command)}">copy resume command</button>
+          <a class="chip" href="${esc('vscode://anthropic.claude-code/open?session=' + encodeURIComponent(sel.session_id))}">open in VS Code</a>
+          <span class="mix">opens if this repo is the folder open in VS Code</span></div>`
+      })() : ''}
+      ${sel.kind !== 'chief' && lit && sel.agent_id ? `<div class="mix">steer it from the chief session: SendMessage to ${esc(sel.agent_id)}</div>` : ''}
       ${sel.kind !== 'chief' ? `<div><div class="label" style="margin-bottom:6px">reply</div><pre class="reply">${esc(sel.report || (lit ? 'No reply yet. The agent is still playing.' : 'No reply.'))}</pre></div>` : ''}`
   }
   const files = ['task', 'plan', 'progress', 'handoff'].filter((n) => n === 'task' || (n === 'plan' ? r.plan : r.workspace))
-  side += `<div><div class="label" style="margin-bottom:6px">run files</div><div class="files">${files.map((n) => `<button class="chip" type="button" data-file="${n}" aria-pressed="${openFile === n}">${n}</button>`).join('')}</div>
-    <pre class="reply" id="file-view" style="margin-top:8px" ${openFile ? '' : 'hidden'}></pre></div>`
+  if (openTranscript && !(sel && sel.has_transcript && sel.id === openTranscript)) openTranscript = null  // a transcript belongs to the player it was opened on
+  const transcriptChip = sel && sel.has_transcript ? `<button class="chip" type="button" data-transcript="${esc(sel.id)}" aria-pressed="${openTranscript === sel.id}">transcript</button>` : ''
+  side += `<div><div class="label" style="margin-bottom:6px">run files</div><div class="files">${files.map((n) => `<button class="chip" type="button" data-file="${n}" aria-pressed="${openFile === n}">${n}</button>`).join('')}${transcriptChip}</div>
+    <pre class="reply" id="file-view" style="margin-top:8px" ${openFile || openTranscript ? '' : 'hidden'}></pre></div>`
   const keep = ['.s-body', '.s-main', '.s-side', '.reply'].map((s) => [s, 'scrollTop', [...document.querySelectorAll(s)].map((el) => el.scrollTop)])
     .concat([['.table-wrap', 'scrollLeft', [...document.querySelectorAll('.table-wrap')].map((el) => el.scrollLeft)]])
   const closeFocused = document.activeElement && document.activeElement.id === 'close'
@@ -602,15 +634,23 @@ function renderScore({ force = false } = {}) {
   keep.forEach(([s, prop, saved]) => document.querySelectorAll(s).forEach((el, i) => { el[prop] = saved[i] || 0 }))
   lastScoreSig = JSON.stringify(r); pendingScore = false
   if (openFile) loadFile(r.key, openFile)
+  else if (openTranscript) loadTranscript(r.key, openTranscript)
 }
 async function loadFile(key, name) {
+  const show = (text) => { if ($('file-view') && openFile === name) $('file-view').textContent = text }  // a late answer for a closed file is dropped
   try {
     const res = await fetch(`/file?run=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, { cache: 'no-store', headers: DASH_HEADERS })
-    const text = res.ok ? await res.text() : `The ${name} file is not there yet.`
-    if ($('file-view')) $('file-view').textContent = text
-  } catch { if ($('file-view')) $('file-view').textContent = 'The dashboard server stopped. The next chief run starts it again.' }
+    show(res.ok ? await res.text() : `The ${name} file is not there yet.`)
+  } catch { show('The dashboard server stopped. The next chief run starts it again.') }
 }
-function openScore(key) { if (openKey !== key) { openAgent = null; openFile = null } openKey = key; $('score').hidden = false; $('curtain').hidden = false; renderScore({ force: true }); if ($('close')) $('close').focus() }
+async function loadTranscript(key, agentId) {
+  const show = (text) => { if ($('file-view') && openTranscript === agentId) $('file-view').textContent = text }
+  try {
+    const res = await fetch(`/transcript?run=${encodeURIComponent(key)}&agent=${encodeURIComponent(agentId)}`, { cache: 'no-store', headers: DASH_HEADERS })
+    show(res.ok ? await res.text() : res.status === 403 ? STALE_PAGE : 'No transcript for this player.')
+  } catch { show('The dashboard server stopped. The next chief run starts it again.') }
+}
+function openScore(key) { if (openKey !== key) { openAgent = null; openFile = null; openTranscript = null } openKey = key; $('score').hidden = false; $('curtain').hidden = false; renderScore({ force: true }); if ($('close')) $('close').focus() }
 function closeScore() { openKey = null; $('score').hidden = true; $('curtain').hidden = true }
 
 /* ---------- archive ---------- */
@@ -635,9 +675,17 @@ document.addEventListener('click', async (e) => {
   if (t.closest('#archived-toggle')) { view = view === 'archived' ? 'active' : 'archived'; filter = null; await poll(); renderAll(); return }
   if (t.closest('#close')) return closeScore()
   const file = t.closest('[data-file]')
-  if (file) { openFile = openFile === file.dataset.file ? null : file.dataset.file; renderScore({ force: true }); return }
+  if (file) { openFile = openFile === file.dataset.file ? null : file.dataset.file; openTranscript = null; renderScore({ force: true }); return }
+  const transcript = t.closest('[data-transcript]')
+  if (transcript) { openTranscript = openTranscript === transcript.dataset.transcript ? null : transcript.dataset.transcript; openFile = null; renderScore({ force: true }); return }
+  const copy = t.closest('[data-copy]')
+  if (copy) {
+    try { await navigator.clipboard.writeText(copy.dataset.copy); copy.textContent = 'copied'; setTimeout(() => { copy.textContent = 'copy resume command' }, 2000) }
+    catch { const code = copy.parentElement && copy.parentElement.querySelector('code'); if (code) window.getSelection().selectAllChildren(code) }
+    return
+  }
   const agent = t.closest('[data-agent]')
-  if (agent) { openAgent = agent.dataset.agent; renderScore({ force: true }); return }
+  if (agent) { openAgent = agent.dataset.agent; openTranscript = null; renderScore({ force: true }); return }
   if (t.closest('[data-dismiss-missing]')) {
     $('missing').innerHTML = ''
     const p = new URLSearchParams(location.search)
@@ -732,12 +780,12 @@ async function poll() {
     }
     renderStatus()
     const linked = params.get('run'), linkPending = linked && !linkedOnce
-    if (!changed && !pendingScore && !linkPending) { if (openKey && !openFile) renderScore(); return }
+    if (!changed && !pendingScore && !linkPending) { if (openKey && !openFile && !openTranscript) renderScore(); return }
     if (changed) { renderStage(); renderBar(); renderProgramme() }
     if (linkPending) {
       await openLinked(linked)
       linkedOnce = true  /* only after it completed: a failed archive fetch throws past this and is retried next poll */
-    } else if (openKey && !openFile) renderScore()
+    } else if (openKey && !openFile && !openTranscript) renderScore()
   } catch {
     $('status').textContent = 'The dashboard server is not answering. The next chief run starts it again, or run: python3 <chief skill>/scripts/chief-run.py dashboard'
   }
