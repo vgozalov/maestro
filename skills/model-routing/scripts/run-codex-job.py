@@ -84,7 +84,7 @@ def summarise_events(log_path):
     return thread_id, usage, steps, largest_item_chars, error
 
 
-RUN_TAG = re.compile(r"^Run:\s*(\S+)(?:\s+Task:\s*(\S+))?(?:\s+Role:\s*(\S+))?", re.MULTILINE)
+RUN_TAG = re.compile(r"^Run:[ \t]*(.+?)(?=[ \t]+(?:Task|Role):|[ \t]*$)(?:[ \t]+Task:[ \t]*(\S+))?(?:[ \t]+Role:[ \t]*(\S+))?", re.MULTILINE)
 
 
 def parse_run_tag(brief):

@@ -53,7 +53,7 @@ ROBOTS = SKILL_DIR / "robots.svg"  # drawn by assets/generate.py, the same robot
 FONTS = {name: SKILL_DIR / "fonts" / name for name in ("instrument-serif.woff2", "instrument-sans.woff2", "ibm-plex-mono.woff2")}
 
 PHASES = ["intake", "research", "plan", "plan-review", "approval", "implement", "review", "report", "paused", "done"]
-RUN_TAG = re.compile(r"Run:\s*(\S+)(?:\s+Task:\s*(\S+))?(?:\s+Role:\s*(\S+))?")
+RUN_TAG = re.compile(r"Run:[ \t]*(.+?)(?=[ \t]+(?:Task|Role):|[ \t]*$)(?:[ \t]+Task:[ \t]*(\S+))?(?:[ \t]+Role:[ \t]*(\S+))?", re.MULTILINE)
 STALE_SECONDS = 15 * 60
 QUIET_SECONDS = 2 * 3600  # an unfinished run with no agent working and no phase change for this long has gone quiet
 BUCKET_SECONDS = 600  # spend is kept in 10-minute buckets for the sparkline and the burn rate

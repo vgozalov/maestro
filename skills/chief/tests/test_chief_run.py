@@ -205,6 +205,14 @@ class BoardTest(Workspace):
         self.assertEqual(totals["chatgpt"]["unpriced"], 1)
         self.assertEqual(totals["chatgpt"]["cost_usd"], 0)
 
+    def test_subagents_of_a_repo_with_a_space_in_its_path_are_found(self):
+        repo = self.other_repo("My Project")
+        run = self.start(repo=repo, title="Spaced")
+        self.transcript("s1", f"Run: {run}   Task: 2   Role: implement\nBuild it.", [
+            ("claude-sonnet-5-5", {"input_tokens": 10, "output_tokens": 10})])
+        card = next(item for item in self.board()["runs"] if item["id"] == run.name)
+        self.assertEqual([(a["role"], a["task"]) for a in card["agents"] if a["id"] != "chief"], [("implement", "2")])
+
     def test_a_running_codex_job_whose_process_is_gone_shows_stopped(self):
         run = self.start(title="X")
         self.codex_record(run, "ghost", status="running", pid=99999999, ended=None, usage=None)
@@ -678,6 +686,26 @@ class CodexRecordTest(unittest.TestCase):
 
     def test_a_brief_without_a_tag_has_none(self):
         self.assertIsNone(codex_job.parse_run_tag("Repo: /repo\nFix it."))
+
+    def test_a_run_path_with_spaces_is_read_whole(self):
+        tag = codex_job.parse_run_tag("Run: /a/My Project/.chief/runs/r1   Task: 2   Role: implement\nRepo: /a")
+        self.assertEqual(tag, {"run": "/a/My Project/.chief/runs/r1", "task": "2", "role": "implement"})
+
+    def test_a_tag_without_task_and_role_keeps_the_whole_path(self):
+        tag = codex_job.parse_run_tag("Run: /a/My Project/r1  \nRepo: /a")
+        self.assertEqual(tag, {"run": "/a/My Project/r1", "task": None, "role": None})
+
+    def test_single_spaces_between_fields_still_split(self):
+        self.assertEqual(codex_job.parse_run_tag("Run: r1 Task: - Role: review"), {"run": "r1", "task": "-", "role": "review"})
+
+    def test_the_tag_never_reads_the_next_line(self):
+        self.assertEqual(codex_job.parse_run_tag("Run: /a/r1\nTask: 3"), {"run": "/a/r1", "task": None, "role": None})
+        self.assertEqual(codex_job.parse_run_tag("Run: /a/r1\nRepo: /a"), {"run": "/a/r1", "task": None, "role": None})
+        self.assertIsNone(codex_job.parse_run_tag("Run:\nRepo: /a"))
+
+    def test_chief_run_reads_the_same_tag(self):
+        match = chief.RUN_TAG.search("Run: /a/My Project/r1   Task: 2   Role: fix\nRepo: /a")
+        self.assertEqual(match.groups(), ("/a/My Project/r1", "2", "fix"))
 
     def test_records_are_written_into_the_run_folder(self):
         with tempfile.TemporaryDirectory() as folder:
