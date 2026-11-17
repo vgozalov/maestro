@@ -397,5 +397,76 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(sent, [["/transcript?run=r1%40abc&agent=claude-w1", "1"]])
 
 
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class CacheBadgeTest(unittest.TestCase):
+    NOW = 1_800_000_000_000  # ms
+
+    def state(self, last_ago, ttl, **run):
+        """cacheState for a cache last touched `last_ago` seconds before NOW."""
+        cache = None if ttl is None else {"last_at": self.NOW // 1000 - last_ago, "ttl_s": ttl}
+        return run_page(f"return cacheState({json.dumps(sample_run(cache=cache, **run))}, {self.NOW})")
+
+    def test_a_cache_inside_its_ttl_is_hot_with_the_minutes_left(self):
+        self.assertEqual(self.state(3600 - 42 * 60, 3600), {"state": "hot", "text": "cache hot · 42m left"})
+        self.assertEqual(self.state(300 - 150, 300), {"state": "hot", "text": "cache hot · 3m left"})
+
+    def test_minutes_round_up_and_never_read_zero(self):
+        self.assertEqual(self.state(300 - 1, 300)["text"], "cache hot · 1m left")
+        self.assertEqual(self.state(300 - 61, 300)["text"], "cache hot · 2m left")
+        self.assertEqual(self.state(300 - 120, 300)["text"], "cache hot · 2m left")  # exactly 2 minutes
+        self.assertEqual(self.state(300 - 121, 300)["text"], "cache hot · 3m left")
+
+    def test_a_cache_past_its_ttl_is_expired(self):
+        self.assertEqual(self.state(300, 300), {"state": "expired", "text": "cache expired"})
+        self.assertEqual(self.state(9000, 3600)["state"], "expired")
+
+    def test_no_cache_data_or_a_finished_run_shows_nothing(self):
+        self.assertIsNone(self.state(10, None))
+        self.assertIsNone(run_page(f"return cacheState({json.dumps(sample_run(cache={'last_at': None, 'ttl_s': 300}))}, {self.NOW})"))
+        self.assertIsNone(run_page(f"return cacheState({json.dumps(sample_run(cache={'last_at': 1, 'ttl_s': None}))}, {self.NOW})"))
+        self.assertIsNone(run_page(f"return cacheState({json.dumps(sample_run())}, {self.NOW})"))  # no cache key at all
+        self.assertIsNone(self.state(10, 300, phase="done"))
+        self.assertIsNone(self.state(10, 300, ended="2026-11-17T01:00:00Z"))
+        self.assertEqual(run_page("return cacheBadge({key: 'k', phase: 'done', cache: {last_at: 1, ttl_s: 300}})"), "")
+
+    def test_the_badge_is_on_the_card_and_in_the_score_header(self):
+        cache = {"last_at": int(self.NOW // 1000) - 60, "ttl_s": 3600}
+        board = json.dumps(sample_board([sample_run(cache=cache)]))
+        card = run_page(f"Date.now = () => {self.NOW}; active = {board}; renderProgramme(); return $('prog').innerHTML")
+        score = run_page(f"Date.now = () => {self.NOW}; active = {board}; openKey = 'r1@abc'; renderScore({{ force: true }}); return $('score').innerHTML")
+        for html in (card, score):
+            self.assertEqual(html.count('data-cache="r1@abc"'), 1)
+            self.assertIn("cache hot · 59m left", html)
+            self.assertIn("full price", html)
+        self.assertNotIn("data-cache", run_page(f"active = {json.dumps(sample_board([sample_run()]))}; renderProgramme(); return $('prog').innerHTML"))
+
+    def test_the_tick_patches_the_text_in_place_and_redraws_nothing(self):
+        out = run_page(f"""const cache = {{ last_at: {self.NOW // 1000}, ttl_s: 300 }}
+          active = {json.dumps(sample_board([sample_run()]))}; active.runs[0].cache = cache
+          const badge = __el(); badge.setAttribute('data-cache', 'r1@abc'); __reg['[data-cache]'] = [badge]
+          let redraws = 0; for (const name of ['renderScore', 'renderProgramme', 'renderStage']) {{ const real = globalThis[name]; globalThis[name] = (...a) => {{ redraws++; return real(...a) }} }}
+          $('score').innerHTML = 'MARK'
+          tickCache({self.NOW}); const hot = [badge.textContent, badge.className]
+          tickCache({self.NOW + 200_000}); const later = badge.textContent
+          tickCache({self.NOW + 301_000}); const gone = [badge.textContent, badge.className]
+          active.runs[0].phase = 'done'; tickCache({self.NOW}); const hidden = badge.hidden
+          return [hot, later, gone, hidden, redraws, $('score').innerHTML]""")
+        self.assertEqual(out, [["cache hot · 5m left", "cache hot"], "cache hot · 2m left", ["cache expired", "cache expired"], True, 0, "MARK"])
+
+    def test_poll_refreshes_the_badge_on_an_unchanged_board(self):
+        cache = {"last_at": self.NOW // 1000, "ttl_s": 3600}
+        fixed = json.dumps(sample_board([sample_run(cache=cache)]))
+        out = run_page(f"""fetch = async () => ({{ ok: true, status: 200, text: async () => JSON.stringify({fixed}) }})
+          const badge = __el(); badge.setAttribute('data-cache', 'r1@abc'); __reg['[data-cache]'] = [badge]
+          let calls = 0; const real = renderProgramme; renderProgramme = () => {{ calls++; real() }}
+          Date.now = () => {self.NOW}; await poll(); const first = badge.textContent
+          Date.now = () => {self.NOW} + 30 * 60 * 1000; await poll(); return [first, badge.textContent, calls]""")
+        self.assertEqual(out, ["cache hot · 60m left", "cache hot · 30m left", 1])
+
+    def test_the_badge_adds_no_timer(self):
+        self.assertEqual(PAGE.read_text().count("setInterval("), 1)
+        self.assertNotIn("setTimeout(", PAGE.read_text().split("function tickCache")[1].split("\nfunction ")[0])
+
+
 if __name__ == "__main__":
     unittest.main()

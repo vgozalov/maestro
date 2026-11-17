@@ -116,6 +116,10 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .card.quiet { opacity: .62; border-style: dashed; }
 .card .where { display: flex; justify-content: space-between; gap: 8px; font: 11.5px/1.2 var(--f-mono); color: var(--muted); min-width: 0; }
 .card .where span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cachebar { display: flex; min-width: 0; }
+.cache { font: 11px/1 var(--f-mono); padding: 2px 6px; border: 1px solid currentColor; border-radius: 9px; white-space: nowrap; }
+.cache.hot { color: var(--gold); }
+.cache.expired { color: var(--muted); opacity: .55; }
 .card h3 { margin: 0; font: 400 21px/1.08 var(--f-display); text-wrap: balance; overflow-wrap: anywhere; }
 .staff { display: block; width: 100%; height: 30px; }
 .stats { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; font: 12px var(--f-mono); color: var(--muted); }
@@ -475,12 +479,40 @@ function sessionBadge(r) {
   const n = sessionTotals[r.session_id] || 1
   return `<span class="sess${n > 1 ? ' shared' : ''}" style="--sess:${SESSION_COLORS[sessionHue(r.session_id)]}" title="chat session ${esc(r.session_id)}">◆ ${esc(String(r.session_id).slice(0, 8))}${n > 1 ? ` · ${n} runs` : ''}</span>`
 }
+const CACHE_TIP = {
+  hot: "The chief's prompt cache is warm: a turn before it runs out re-reads the context at the cached price. Once it expires, the next chief turn re-sends the full context at full price.",
+  expired: "The chief's prompt cache has expired: the next chief turn re-sends the full context at full price.",
+}
+function cacheState(run, nowMs = Date.now()) {
+  const c = run.cache
+  if (!c || c.ttl_s == null || c.last_at == null || run.ended || run.phase === 'done' || run.archived) return null
+  const remaining = c.last_at + c.ttl_s - nowMs / 1000
+  return remaining > 0 ? { state: 'hot', text: 'cache hot · ' + Math.ceil(remaining / 60) + 'm left' } : { state: 'expired', text: 'cache expired' }
+}
+function cacheBadge(run) {
+  const s = cacheState(run)
+  if (!s) return ''
+  return `<span class="cache ${s.state}" data-cache="${esc(run.key)}" title="${esc(CACHE_TIP[s.state])}">${esc(s.text)}</span>`
+}
+// Patches the badges on the poll tick. Never rebuilds the score or the programme: that would reset scroll and selection.
+function tickCache(nowMs = Date.now()) {
+  document.querySelectorAll('[data-cache]').forEach((el) => {
+    const run = (active && active.runs || []).find((x) => x.key === el.getAttribute('data-cache'))
+    const s = run && cacheState(run, nowMs)
+    if (!s) { el.hidden = true; return }
+    if (el.textContent !== s.text) el.textContent = s.text
+    if (el.className !== 'cache ' + s.state) el.className = 'cache ' + s.state
+    if (el.title !== CACHE_TIP[s.state]) el.title = CACHE_TIP[s.state]
+    if (el.hidden) el.hidden = false
+  })
+}
 function card(r) {
   const done = r.phase === 'done', L = live(r), blocked = stuck(r).length
   const c = cost(r, 'claude'), g = cost(r, 'chatgpt'), t = c + g
-  const tasks = r.tasks || []
+  const tasks = r.tasks || [], badge = cacheBadge(r)
   return `<button class="card slip ${done ? 'done' : ''} ${r.quiet ? 'quiet' : ''}" type="button" data-run="${esc(r.key)}">
     <div class="where"><span title="${esc(r.repo)}">${esc(repoName(r.repo))} · ${esc(r.source)}</span><span>${dur(r.started, r.ended)}</span>${sessionBadge(r)}</div>
+    ${badge ? `<div class="cachebar">${badge}</div>` : ''}
     <h3>${esc(r.title)}</h3>
     ${r.chat_title && r.chat_title !== r.title ? `<div class="mix">chat: ${esc(r.chat_title)}</div>` : ''}
     ${cardStaff(r)}
@@ -625,7 +657,7 @@ function renderScore({ force = false } = {}) {
     : archivable ? `<button class="close" type="button" data-archive="archive">archive</button>` : ''
   $('score').innerHTML = `
     <div class="s-head"><div><span class="label">${esc(r.source)} · ${esc(r.phase)}${r.quiet ? ` · quiet for ${dur(r.last_activity)}` : ''}${r.archived ? ' · archived' : ''}</span><h2 id="s-title">${esc(r.title)}</h2>
-      <div class="meta"><b title="${esc(r.repo)}">${esc(repoName(r.repo))}</b><span>${esc(r.id)}</span><span>${dur(r.started, r.ended)}</span><span>${players(r).length} players</span></div></div>
+      <div class="meta"><b title="${esc(r.repo)}">${esc(repoName(r.repo))}</b><span>${esc(r.id)}</span><span>${dur(r.started, r.ended)}</span><span>${players(r).length} players</span>${cacheBadge(r)}</div></div>
       <div class="tot"><div><span class="label" style="color:var(--claude)">claude</span><div class="v">${money(c)}</div></div>
         <div><span class="label" style="color:var(--gpt)">chatgpt</span><div class="v">${money(g)}</div></div>
         <div><span class="label">total</span><div class="v">${money(c + g)}</div></div>
@@ -782,6 +814,7 @@ async function poll() {
       else { archived.generated = data2.generated; if (pendingScore) archived = data2 }
     }
     renderStatus()
+    tickCache()  // before the early return below, so an unchanged board still gets fresh minutes
     const linked = params.get('run'), linkPending = linked && !linkedOnce
     if (!changed && !pendingScore && !linkPending) { if (openKey && !openFile && !openTranscript) renderScore(); return }
     if (changed) { renderStage(); renderBar(); renderProgramme() }
