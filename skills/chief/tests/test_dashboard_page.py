@@ -1250,5 +1250,32 @@ class StageTest(unittest.TestCase):
         self.assertIn("r-chief-legs", gen)
 
 
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class ArchiveButtonTest(unittest.TestCase):
+    WORKER = {"id": "claude-w1", "kind": "implement", "role": "implement", "task": "2", "provider": "claude",
+              "model": "claude-sonnet-5-5", "status": "running", "acts": []}
+
+    def score(self, **run):
+        board = sample_board([sample_run(**run)])
+        return run_page(f"active = {json.dumps(board)}; openKey = 'r1@abc'; renderScore({{ force: true }}); return $('score').innerHTML")
+
+    def test_every_unarchived_run_can_be_archived(self):
+        for phase in ("intake", "research", "plan", "implement", "review", "paused", "done"):
+            with self.subTest(phase=phase):
+                html = self.score(phase=phase, quiet=False)
+                self.assertRegex(html, r'data-archive="archive">archive</button>')
+                self.assertNotIn('data-archive="restore"', html)
+
+    def test_the_label_counts_working_agents(self):
+        done = {**self.WORKER, "id": "claude-w2", "status": "done"}
+        html = self.score(phase="implement", agents=[self.WORKER, {**self.WORKER, "id": "claude-w3"}, done])
+        self.assertIn('data-archive="archive">archive (2 working)</button>', html)
+
+    def test_an_archived_run_offers_restore_only(self):
+        html = self.score(phase="implement", archived="2026-11-17T00:00:00Z")
+        self.assertIn('data-archive="restore"', html)
+        self.assertNotIn('data-archive="archive"', html)
+
+
 if __name__ == "__main__":
     unittest.main()

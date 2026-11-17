@@ -242,7 +242,7 @@ def load_run(run_dir):
     return state
 
 
-def set_phase(run_dir, phase, plan=None, workspace=None):
+def set_phase(run_dir, phase, plan=None, workspace=None, config_dir=None, prices=None):
     if phase not in PHASES:
         raise ValueError(f"unknown phase {phase!r}; one of: {', '.join(PHASES)}")
     state = load_run(run_dir)
@@ -257,6 +257,9 @@ def set_phase(run_dir, phase, plan=None, workspace=None):
         state["workspace"] = workspace
     state["ended"] = at if phase == "done" else None
     write_json(os.path.join(run_dir, "run.json"), state)
+    run = read_run(run_dir, None)
+    if phase in ("done", "paused") and run and (read_json(pointer_path(run["repo"], run["id"])) or {}).get("archived"):
+        set_archived(run, True, build_cards([run], config_dir, prices)[0]["totals"])  # the totals taken at archive time are stale
     return state
 
 
@@ -448,7 +451,8 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
     cache = {"last_at": int(last_cache[0]), "ttl_s": last_cache[1]} if last_cache and last_cache[0] is not None else None
     return {"tokens": tokens, "cost_usd": None if unpriced else round(cost, 6), "model": model,
             "report": last_text[-6000:], "started": first_at, "ended": last_at if done else None, "done": done,
-            "acts": [act for act in reversed(acts[-6:])], "spend": spend, "context": context, "cache": cache}
+            "acts": [act for act in reversed(acts[-6:])], "spend": spend, "context": context, "cache": cache,
+            "last_at": last_at}
 
 
 def parse_subagent(path, prices):
@@ -498,7 +502,8 @@ def claude_agents(config_dir, runs, prices):
             continue
         for run in runs:
             if same_run(parsed["tag_run"], run["dir"], run["id"]):
-                status = "done" if parsed["done"] else ("stopped" if time.time() - mtime > STALE_SECONDS else "running")
+                active = parse_time(parsed["last_at"]) or mtime  # the last message, not the file's mtime: trailing records bump that
+                status = "done" if parsed["done"] else ("stopped" if time.time() - active > STALE_SECONDS else "running")
                 verdict = verdict_of(parsed["report"]) if parsed["done"] else None
                 if verdict in ("BLOCKED", "NEEDS_CONTEXT"):
                     status = "blocked"
@@ -509,7 +514,7 @@ def claude_agents(config_dir, runs, prices):
                     "model": parsed["model"], "task": parsed["task"], "role": parsed["role"],
                     "description": parsed["description"], "status": status, "started": parsed["started"],
                     "ended": parsed["ended"], "tokens": parsed["tokens"], "cost_usd": parsed["cost_usd"],
-                    "report": parsed["report"], "verdict": verdict, "acts": parsed["acts"], "active": mtime,
+                    "report": parsed["report"], "verdict": verdict, "acts": parsed["acts"], "active": active,
                     "context": parsed["context"], "_spend": parsed["spend"],
                     "session_id": os.path.basename(os.path.dirname(os.path.dirname(path))),
                     "agent_id": os.path.basename(path)[len("agent-"): -len(".jsonl")], "_transcript": path})
@@ -606,13 +611,16 @@ def chief_session(config_dir, run, prices, since):
         return None
     path, text, sure = found
     parsed = parse_messages(text.splitlines(), prices, start=start - 120, end=end, sidechain=False)
-    mtime = os.path.getmtime(path)
-    status = "done" if run.get("ended") else ("running" if time.time() - mtime < STALE_SECONDS else "stopped")
+    try:
+        active = parse_time(parsed["last_at"]) or os.path.getmtime(path)
+    except OSError:
+        return None
+    status = "done" if run.get("ended") else ("running" if time.time() - active < STALE_SECONDS else "stopped")
     return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
             "description": "the chief session", "status": status,
             "started": run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
             "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
-            "active": mtime, "context": parsed["context"], "_spend": parsed["spend"],
+            "active": active, "context": parsed["context"], "_spend": parsed["spend"],
             "cache": None if run.get("ended") else parsed["cache"],
             "session_id": os.path.basename(path)[: -len(".jsonl")], "chat_title": chat_title(text),
             "cwd": session_cwd(text), "_transcript": path if sure else None}
@@ -983,11 +991,13 @@ def build_board(repo=None, config_dir=None, prices=None, with_git=True, days=Non
     checkout's git state; with_git=False skips it. Runs that ended more than `days` ago count as archived."""
     every_run = list_runs(repo)
     shown = [run for run in every_run if is_archived(run, days) == archived]
-    stored = [run for run in every_run if run.get("archived") and run.get("archived_totals")]
+    archived_runs = [run for run in every_run if run.get("archived") and run.get("archived_totals")]
+    working = [] if archived else [run for run in archived_runs if run.get("phase") not in ("done", "paused")]
+    stored = [run for run in archived_runs if run not in working]  # a run archived mid-work is counted live below
     cards = build_cards(shown, config_dir, prices)
     agents = [agent for card in cards for agent in card["agents"]]
     archived_total = 0.0 if archived else sum((run["archived_totals"] or {}).get("total_cost_usd") or 0 for run in stored)
-    spend = spend_summary(agents, archived_total)
+    spend = spend_summary(agents + [agent for card in build_cards(working, config_dir, prices) for agent in card["agents"]], archived_total)
     for agent in agents:
         agent.pop("_spend", None)
         agent["has_transcript"] = bool(agent.pop("_transcript", None))
@@ -1530,7 +1540,7 @@ def main():
     commands.add_parser("register", help="add this checkout's existing runs to the shared dashboard")
     archive_command = commands.add_parser("archive", help="hide runs from the dashboard, or bring them back")
     archive_command.add_argument("runs", nargs="*", help="run ids or dashboard keys")
-    archive_command.add_argument("--done", action="store_true", help="every finished run on this machine")
+    archive_command.add_argument("--done", action="store_true", help="every finished run on this machine; use it on its own, without run names")
     archive_command.add_argument("--restore", action="store_true", help="bring the runs back instead")
     board_command = commands.add_parser("board", help="print the dashboard data")
     serve_command = commands.add_parser("serve", help="serve the dashboard for every repo on 127.0.0.1")
@@ -1582,6 +1592,8 @@ def main():
                 print(summary_markdown(repo, run_dir))
         elif args.command == "archive":
             keys = list(args.runs)
+            if args.done and keys:
+                raise ValueError("--done archives every finished run; run it on its own, without run names")
             if args.done:
                 keys += [run["key"] for run in list_runs(repo) if run.get("phase") == "done" and not run.get("archived")]
             if not keys:
