@@ -371,10 +371,26 @@ def verdict_of(report):
     return match.group(1).upper() if match else None
 
 
+def cache_ttl(usage, written_ttl):
+    """(ttl of the latest cache write, ttl this message implies) for one message's usage, given the ttl of the writes before it.
+
+    A write names its ttl: 1 hour, else 5 minutes. A pure cache read writes nothing, so it does not say which ttl it
+    refreshed: it takes the latest write's, else 5 minutes. No cache tokens at all means caching is off: None."""
+    split = usage.get("cache_creation") or {}
+    if (split.get("ephemeral_1h_input_tokens") or 0) > 0:
+        return 3600, 3600
+    if (split.get("ephemeral_5m_input_tokens") or 0) > 0 or (usage.get("cache_creation_input_tokens") or 0) > 0:
+        return 300, 300
+    if (usage.get("cache_read_input_tokens") or 0) > 0:
+        return written_ttl, written_ttl or 300
+    return written_ttl, None
+
+
 def parse_messages(lines, prices, start=None, end=None, sidechain=None):
     """Usage, cost, recent tool calls, spend per 10 minutes and the last reply over a transcript's assistant messages."""
     messages, last_text, last_entry, first_at, last_at = {}, "", None, None, None
     acts, stamps = [], {}
+    last_cache, written_ttl = None, None  # the newest message's (time, ttl), and the ttl of the latest cache write
     for line in lines:
         try:
             entry = json.loads(line)
@@ -395,6 +411,8 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
         if message.get("usage") and message.get("id"):
             messages[message["id"]] = message
             stamps[message["id"]] = at
+            written_ttl, ttl = cache_ttl(message["usage"], written_ttl)
+            last_cache = (at, ttl)
         for block in message.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 acts.append([entry.get("timestamp"), describe_tool(block.get("name"), block.get("input"))])
@@ -426,9 +444,10 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
     done = bool(last_entry and last_entry.get("type") == "assistant"
                 and (last_entry.get("message") or {}).get("stop_reason") == "end_turn")
     context = {"last": sizes[-1], "peak": max(sizes)} if sizes else None
+    cache = {"last_at": int(last_cache[0]), "ttl_s": last_cache[1]} if last_cache and last_cache[0] is not None else None
     return {"tokens": tokens, "cost_usd": None if unpriced else round(cost, 6), "model": model,
             "report": last_text[-6000:], "started": first_at, "ended": last_at if done else None, "done": done,
-            "acts": [act for act in reversed(acts[-6:])], "spend": spend, "context": context}
+            "acts": [act for act in reversed(acts[-6:])], "spend": spend, "context": context, "cache": cache}
 
 
 def parse_subagent(path, prices):
@@ -593,6 +612,7 @@ def chief_session(config_dir, run, prices, since):
             "started": run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
             "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
             "active": mtime, "context": parsed["context"], "_spend": parsed["spend"],
+            "cache": None if run.get("ended") else parsed["cache"],
             "session_id": os.path.basename(path)[: -len(".jsonl")], "chat_title": chat_title(text),
             "cwd": session_cwd(text), "_transcript": path if sure else None}
 
@@ -920,7 +940,8 @@ def build_cards(runs, config_dir=None, prices=None):
                                               "plan", "workspace", "dir", "repo", "archived")}
         chief_row = next((agent for agent in agents if agent["id"] == "chief"), None) or {}
         card.update(session_id=chief_row.get("session_id") or plain_session_id(run.get("session_id")),
-                    chat_title=chief_row.get("chat_title"), cwd=chief_row.get("cwd") or run.get("repo"))
+                    chat_title=chief_row.get("chat_title"), cwd=chief_row.get("cwd") or run.get("repo"),
+                    cache=chief_row.get("cache"))
         last = max([parse_time(entry.get("at")) or 0 for entry in run.get("phases") or []]
                    + [agent.get("active") or 0 for agent in agents] + [parse_time(run.get("started")) or 0])
         working = any(agent["status"] == "running" and agent["kind"] != "chief" for agent in agents)

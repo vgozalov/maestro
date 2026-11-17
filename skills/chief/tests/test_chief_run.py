@@ -16,6 +16,7 @@ import unittest
 import unittest.mock
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -32,6 +33,13 @@ def load(path, name):
 
 chief = load(SCRIPT, "chief_run")
 codex_job = load(HERE.parent.parent / "model-routing" / "scripts" / "run-codex-job.py", "run_codex_job")
+
+BARE = {"input_tokens": 5, "output_tokens": 5}
+WRITE_1H = {"input_tokens": 5, "output_tokens": 5, "cache_read_input_tokens": 40_000, "cache_creation_input_tokens": 2_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 2_000, "ephemeral_5m_input_tokens": 0}}
+WRITE_5M = {"input_tokens": 5, "output_tokens": 5, "cache_read_input_tokens": 40_000, "cache_creation_input_tokens": 2_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 2_000}}
+READ_ONLY = {"input_tokens": 5, "output_tokens": 5, "cache_read_input_tokens": 42_000, "cache_creation_input_tokens": 0}
 
 
 class Workspace(unittest.TestCase):
@@ -227,6 +235,77 @@ class SessionLinkTest(Workspace):
         text = json.dumps(self.board())
         self.assertNotIn(str(self.config), text)
         self.assertNotIn('"_transcript"', text)  # the key itself; has_transcript is meant to be there
+
+    def turns(self, path, run, session_id, turns):
+        """Append assistant turns, given as (seconds after the run started, usage), to a main session file. Returns the start as epoch seconds."""
+        began = chief.parse_time(json.loads((run / "run.json").read_text())["started"])
+        lines = []
+        for index, (offset, usage) in enumerate(turns):
+            stamp = datetime.fromtimestamp(began + offset, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            lines.append({"sessionId": session_id, "type": "assistant", "timestamp": stamp, "isSidechain": False,
+                          "message": {"id": f"msg_{session_id}_t{index}", "model": "claude-opus-5-5", "role": "assistant",
+                                      "stop_reason": "tool_use", "usage": usage, "content": [{"type": "text", "text": "ok"}]}})
+        with open(path, "a") as handle:
+            handle.write("\n".join(json.dumps(line) for line in lines) + "\n")
+        return int(began)
+
+    def cache_of(self, run, turns, session_id="cache0001"):
+        began = self.turns(self.main_session(session_id, run), run, session_id, turns)
+        return began, self.card(run)["cache"]
+
+    def test_a_one_hour_write_means_a_one_hour_ttl(self):
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, WRITE_1H)])
+        self.assertEqual(cache, {"last_at": began + 60, "ttl_s": 3600})
+        self.assertEqual(self.chief_row(run)["cache"], cache)
+
+    def test_a_five_minute_write_means_a_five_minute_ttl(self):
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, WRITE_5M)])
+        self.assertEqual(cache, {"last_at": began + 60, "ttl_s": 300})
+
+    def test_no_usage_means_no_cache_and_no_cache_tokens_means_no_ttl(self):
+        no_usage = json.dumps({"type": "assistant", "timestamp": "2026-11-17T00:00:00Z", "message": {"id": "m", "role": "assistant", "content": []}})
+        self.assertIsNone(chief.parse_messages([no_usage], PRICES)["cache"])
+        self.assertIsNone(chief.parse_messages([], PRICES)["cache"])
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, BARE)])
+        self.assertEqual(cache, {"last_at": began + 60, "ttl_s": None})
+
+    def test_the_last_message_wins(self):
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, WRITE_1H), (600, WRITE_5M)])
+        self.assertEqual(cache, {"last_at": began + 600, "ttl_s": 300})
+        other = self.start(title="Y")
+        began, cache = self.cache_of(other, [(60, WRITE_5M), (900, WRITE_1H)], session_id="cache0002")
+        self.assertEqual(cache, {"last_at": began + 900, "ttl_s": 3600})
+
+    def test_a_pure_cache_read_keeps_the_ttl_of_the_last_write(self):
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, WRITE_1H), (900, READ_ONLY)])
+        self.assertEqual(cache, {"last_at": began + 900, "ttl_s": 3600})
+        other = self.start(title="Y")
+        began, cache = self.cache_of(other, [(60, READ_ONLY)], session_id="cache0003")
+        self.assertEqual(cache, {"last_at": began + 60, "ttl_s": 300})
+
+    def test_a_message_that_is_not_the_last_does_not_decide_the_ttl(self):
+        run = self.start(title="X")
+        began, cache = self.cache_of(run, [(60, WRITE_1H), (120, BARE)])
+        self.assertEqual(cache, {"last_at": began + 120, "ttl_s": None})
+
+    def test_a_finished_run_has_no_cache_and_workers_never_get_one(self):
+        run = self.start(title="X")
+        self.cache_of(run, [(60, WRITE_1H)])
+        self.transcript("w1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        row = next(a for a in self.card(run)["agents"] if a["id"] == "claude-w1")
+        self.assertNotIn("cache", row)
+        chief.set_phase(str(run), "done")
+        self.assertIsNone(self.card(run)["cache"])
+        self.assertIsNone(self.chief_row(run)["cache"])
+
+    def test_a_run_without_a_chief_session_has_no_cache(self):
+        run = self.start(title="X")
+        self.assertIsNone(self.card(run)["cache"])
 
 
 class PhaseTest(Workspace):
