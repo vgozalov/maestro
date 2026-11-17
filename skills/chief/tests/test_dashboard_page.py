@@ -38,6 +38,7 @@ globalThis.document = Object.assign(__el('document'), {
   activeElement: null,
   getElementById: (id) => (__byId[id] ||= __el(id)),
 })
+window.addEventListener = () => {}
 window.getSelection = () => ({ rangeCount: 0, isCollapsed: true, toString: () => '' })
 globalThis.location = { search: '', pathname: '/' }
 globalThis.history = { replaceState() {} }
@@ -214,6 +215,14 @@ class RefreshTest(unittest.TestCase):
           active.runs[0].title = 'Changed'; $('score').__fire('pointerdown'); lastInteract -= 5000; $('score').innerHTML = 'MARK'
           renderScore(); return [$('score').innerHTML, pendingScore]""")
         self.assertEqual(out, ["MARK", True])
+
+    def test_a_stale_or_released_pointer_no_longer_defers(self):
+        out = run_page(f"""active = {json.dumps(self.BOARD)}; openKey = 'r1@abc'; renderScore({{ force: true }})
+          active.runs[0].title = 'Changed'; $('score').__fire('pointerdown'); lastInteract -= 5000; pointerDownAt -= 11000
+          renderScore(); const stale = $('score').innerHTML.includes('Changed')
+          active.runs[0].title = 'Again'; $('score').__fire('pointerdown'); lastInteract -= 5000; document.__fire('mouseup')
+          renderScore(); return [stale, $('score').innerHTML.includes('Again')]""")
+        self.assertEqual(out, [True, True])
 
     def test_a_deferred_redraw_lands_on_a_quiet_poll_with_an_unchanged_board(self):
         fixed = json.dumps(self.BOARD)

@@ -258,7 +258,7 @@ const params = new URLSearchParams(location.search)
 let active = null, archived = null, view = 'active', filter = params.get('repo') || null
 let openKey = null, openAgent = null, openFile = null, confirmDone = false, linkedOnce = false
 let lastActive = '', lastArchived = ''
-let pointerDown = false, lastInteract = 0, pendingScore = false, lastScoreSig = ''
+let pointerDown = false, pointerDownAt = 0, lastInteract = 0, pendingScore = false, lastScoreSig = ''
 const DASH_HEADERS = { 'X-Chief-Dashboard': '1' }
 
 const $ = (id) => document.getElementById(id)
@@ -529,7 +529,7 @@ function selectionInScore() {
   const sel = window.getSelection()
   return sel.rangeCount > 0 && !sel.isCollapsed && $('score').contains(sel.getRangeAt(0).commonAncestorContainer)
 }
-function userBusy() { return pointerDown || Date.now() - lastInteract < 2000 || selectionInScore() }
+function userBusy() { return (pointerDown && Date.now() - pointerDownAt < 10000) ||Date.now() - lastInteract < 2000 || selectionInScore() }
 function renderScore({ force = false } = {}) {
   const r = allRuns().find((x) => x.key === openKey)
   if (!r) return closeScore()
@@ -581,6 +581,7 @@ function renderScore({ force = false } = {}) {
     <pre class="reply" id="file-view" style="margin-top:8px" ${openFile ? '' : 'hidden'}></pre></div>`
   const keep = ['.s-body', '.s-main', '.s-side', '.reply'].map((s) => [s, 'scrollTop', [...document.querySelectorAll(s)].map((el) => el.scrollTop)])
     .concat([['.table-wrap', 'scrollLeft', [...document.querySelectorAll('.table-wrap')].map((el) => el.scrollLeft)]])
+  const closeFocused = document.activeElement && document.activeElement.id === 'close'
   const focused = document.activeElement && document.activeElement.matches && document.activeElement.matches('tr[data-agent]') ? document.activeElement.dataset.agent : null
   const archivable = r.phase === 'done' || r.phase === 'paused' || r.quiet || r.archived
   const action = r.archived ? `<button class="close" type="button" data-archive="restore">restore</button>`
@@ -594,6 +595,7 @@ function renderScore({ force = false } = {}) {
         <div class="actions">${action}<button class="close" id="close" type="button">close · esc</button></div></div></div>
     <div class="measures">${measures(r)}</div>
     <div class="s-body"><div class="s-main">${tasks}<section><div class="sec-head"><h3>Sections</h3><span class="mix">pick a player to read it</span></div>${sections}</section></div><aside class="s-side">${side}</aside></div>`
+  if (closeFocused && $('close')) $('close').focus({ preventScroll: true })
   if (focused) { const row = [...document.querySelectorAll('tr[data-agent]')].find((el) => el.dataset.agent === focused); if (row) row.focus({ preventScroll: true }) }
   keep.forEach(([s, prop, saved]) => document.querySelectorAll(s).forEach((el, i) => { el[prop] = saved[i] || 0 }))
   lastScoreSig = JSON.stringify(r); pendingScore = false
@@ -653,13 +655,15 @@ $('curtain').addEventListener('click', closeScore)
 
 /* What the user is doing in the score, so a poll never rebuilds it under their hands. */
 const touch = () => { lastInteract = Date.now() }
-$('score').addEventListener('pointerdown', () => { pointerDown = true; touch() })
+$('score').addEventListener('pointerdown', () => { pointerDown = true; pointerDownAt = Date.now(); touch() })
 $('score').addEventListener('wheel', touch)
 $('score').addEventListener('scroll', touch, { capture: true })
 $('score').addEventListener('touchmove', touch)
 $('score').addEventListener('keydown', touch)
 document.addEventListener('pointerup', () => { pointerDown = false })
 document.addEventListener('pointercancel', () => { pointerDown = false })
+document.addEventListener('mouseup', () => { pointerDown = false })
+window.addEventListener('blur', () => { pointerDown = false })
 
 /* The board without its timestamp: `generated` differs on every poll, so it must not count as a change. */
 function boardSig(text) {
