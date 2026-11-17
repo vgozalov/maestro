@@ -75,6 +75,7 @@ Subagent (general-purpose):
       `git commit <your files> -m ...`. Never `git add -A`, `git add .`,
       `git commit -a`, `git stash`, `git reset`, `git checkout -- <path>` or
       `git clean` — each touches siblings' uncommitted work.
+    - Commit as the repo's configured git user only: never set a model as author or committer, and never add Co-Authored-By, "Generated with", or any Claude, ChatGPT, Codex or other model attribution to a commit message or PR body.
     - If git reports `index.lock` exists, wait a few seconds and retry.
     - Your Verification Scope covers only your own files; expect other
       files to change under you. If the typecheck reports errors only in

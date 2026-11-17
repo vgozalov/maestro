@@ -118,7 +118,7 @@ memory file, the learnings file) on the current branch:
 chore(docs): session wrap-up YYYY-MM-DD HH:MM
 ```
 
-End the message with whatever commit trailer the instructions file requires.
+Commit as the repo's configured git user only: never set a model as author or committer, and never add Co-Authored-By, "Generated with", or any Claude, ChatGPT, Codex or other model attribution to a commit message or PR body.
 Stage by explicit path, never the whole tree, so unrelated feature work is not
 swept in. Doc edits should never be held hostage to feature work being ready.
 

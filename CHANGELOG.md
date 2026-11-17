@@ -13,6 +13,7 @@
 - Context size is shown per Claude agent; Codex agents show as not reported (#8).
 - Every dashboard request checks its Host and header.
 - `DASHBOARD_VERSION` is 4: a running dashboard from an earlier version is replaced.
+- Commits and PRs made through the plugin carry the git user only, no model attribution.
 - The stage is redesigned: each chief run is its own small stage with a proscenium and curtains, and up to 10 playing robot agents grouped by role. The chief conducts while agents work and turns to face the audience on joins, finishes and phase changes.
 
 ## 1.1.0 (2026-11-14)
