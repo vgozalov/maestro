@@ -235,6 +235,7 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
   <span class="spacer"></span>
   <button class="chip" id="archived-toggle" type="button" aria-pressed="false">archived</button>
 </div>
+<div id="missing"></div>
 <div id="notices"></div>
 <p class="status-line" id="status"></p>
 <main class="prog" id="prog" aria-live="polite"></main>
@@ -636,8 +637,15 @@ document.addEventListener('click', async (e) => {
   if (file) { openFile = openFile === file.dataset.file ? null : file.dataset.file; renderScore({ force: true }); return }
   const agent = t.closest('[data-agent]')
   if (agent) { openAgent = agent.dataset.agent; renderScore({ force: true }); return }
+  if (t.closest('[data-dismiss-missing]')) {
+    $('missing').innerHTML = ''
+    const p = new URLSearchParams(location.search)
+    p.delete('run')
+    history.replaceState(null, '', p.toString() ? '?' + p : location.pathname)
+    return
+  }
   const run = t.closest('[data-run]')
-  if (run) return openScore(run.dataset.run)
+  if (run) { if (t.closest('#missing')) $('missing').innerHTML = ''; return openScore(run.dataset.run) }
   const repo = t.closest('[data-repo]')
   if (repo) {
     filter = repo.dataset.repo || null
@@ -674,6 +682,34 @@ function boardSig(text) {
 const fetchBoard = (url) => fetch(url, { cache: 'no-store', headers: DASH_HEADERS })
 const STALE_PAGE = 'This page is out of date — reload it.'
 
+/* A ?run= link resolves like the server's find_run: the key, else a bare id that exactly one run has. */
+function resolveLinked(linked, runs) {
+  const byKey = runs.find((r) => r.key === linked)
+  if (byKey) return { run: byKey }
+  const byId = runs.filter((r) => r.id === linked)
+  if (byId.length === 1) return { run: byId[0] }
+  return byId.length > 1 ? { ambiguous: byId } : { missing: true }
+}
+/* Opens the linked run, or says in #missing why it cannot. Writes nothing else. */
+async function openLinked(linked) {
+  let found = resolveLinked(linked, active.runs)
+  if (found.missing) {
+    const res = await fetchBoard('/board.json?view=archived')
+    if (res.status !== 403) {
+      const text = await res.text()
+      lastArchived = boardSig(text); archived = JSON.parse(text)
+      found = resolveLinked(linked, archived.runs)
+    }
+  }
+  if (found.run) { $('missing').innerHTML = ''; openScore(found.run.key); return }
+  if (found.ambiguous) {
+    $('missing').innerHTML = `<div class="notice"><b>which run?</b><span>“${esc(linked)}” is in ${found.ambiguous.length} checkouts:</span> ${found.ambiguous.map((r) => `<button class="chip" type="button" data-run="${esc(r.key)}">${esc(repoName(r.repo))}</button>`).join(' ')}</div>`
+    return
+  }
+  const n = (active.repos || []).length
+  $('missing').innerHTML = `<div class="notice"><b>run not found</b><span>No run “${esc(linked)}” is registered with this dashboard. It shows the runs of ${n} checkouts on this machine; a run from a removed worktree or another machine is not here.</span><button class="chip" type="button" data-dismiss-missing>dismiss</button></div>`
+}
+
 function renderAll() { renderStage(); renderBar(); renderProgramme(); if (openKey) renderScore() }
 async function poll() {
   try {
@@ -698,9 +734,7 @@ async function poll() {
     const linked = params.get('run')
     if (linked && !linkedOnce) {
       linkedOnce = true
-      const byKey = active.runs.find((r) => r.key === linked), byId = active.runs.filter((r) => r.id === linked)
-      const target = byKey || (byId.length === 1 ? byId[0] : null)
-      if (target) openScore(target.key)
+      await openLinked(linked)
     } else if (openKey && !openFile) renderScore()
   } catch {
     $('status').textContent = 'The dashboard server is not answering. The next chief run starts it again, or run: python3 <chief skill>/scripts/chief-run.py dashboard'

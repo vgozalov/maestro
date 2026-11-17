@@ -239,5 +239,52 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(text, "This page is out of date — reload it.")
 
 
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class LinkTest(unittest.TestCase):
+    def serve(self, active, archived=None):
+        a, b = json.dumps(active), json.dumps(archived or sample_board([]))
+        return f"fetch = async (u, i) => {{ __fetches.push([String(u), i || {{}}]); return {{ ok: true, status: 200, text: async () => JSON.stringify(String(u).includes('archived') ? {b} : {a}) }} }};"
+
+    def test_links_resolve_like_the_server(self):
+        a, b = sample_run(key="r1@aaa"), sample_run(key="r1@bbb", repo="/y/other")
+        out = run_page(f"const rs = {json.dumps([a, b])}; return [resolveLinked('r1@bbb', rs).run.key, resolveLinked('r1', rs).ambiguous.length, !!resolveLinked('zz', rs).missing, resolveLinked('r1', [rs[0]]).run.key]")
+        self.assertEqual(out, ["r1@bbb", 2, True, "r1@aaa"])
+
+    def test_an_unknown_link_says_run_not_found(self):
+        out = run_page(f"params.set('run', 'nope@x'); {self.serve(sample_board([sample_run()]))} await poll(); return [$('missing').innerHTML, $('prog').innerHTML.includes('CSV export')]")
+        self.assertIn("run not found", out[0])
+        self.assertIn("nope@x", out[0])
+        self.assertTrue(out[1])
+
+    def test_an_archived_link_is_found(self):
+        key, sent = run_page(f"params.set('run', 'old@x'); {self.serve(sample_board([]), sample_board([sample_run(key='old@x', archived=True)]))} await poll(); return [openKey, __fetches.filter(([u]) => u.includes('view=archived')).map(([, i]) => (i.headers || {{}})['X-Chief-Dashboard'])]")
+        self.assertEqual(key, "old@x")
+        self.assertEqual(sent, ["1"])
+
+    def test_an_ambiguous_id_offers_each_checkout(self):
+        runs = [sample_run(key="r1@aaa"), sample_run(key="r1@bbb", repo="/y/other")]
+        html = run_page(f"params.set('run', 'r1'); {self.serve(sample_board(runs))} await poll(); return $('missing').innerHTML")
+        self.assertIn('data-run="r1@aaa"', html)
+        self.assertIn('data-run="r1@bbb"', html)
+
+    def test_the_notice_is_written_into_missing_only(self):
+        out = run_page(f"params.set('run', 'nope@x'); {self.serve(sample_board([sample_run()]))} await poll(); return [$('headline').innerHTML, $('notices').innerHTML, $('missing').innerHTML.includes('data-dismiss-missing')]")
+        self.assertNotIn("nope@x", out[0])
+        self.assertNotIn("nope@x", out[1])
+        self.assertTrue(out[2])
+
+    def test_dismiss_clears_the_notice_and_the_query(self):
+        out = run_page(f"""params.set('run', 'nope@x'); {self.serve(sample_board([sample_run()]))} await poll()
+          let url = null; history.replaceState = (a, b, u) => {{ url = u }}
+          const btn = __el(); btn.dataset.dismissMissing = ''
+          document.__fire('click', {{ target: Object.assign(__el(), {{ closest: (s) => (s === '[data-dismiss-missing]' ? btn : null) }}) }})
+          await new Promise((r) => setTimeout(r, 0)); return [$('missing').innerHTML, url]""")
+        self.assertEqual(out, ["", "/"])
+
+    def test_the_link_is_tried_once(self):
+        out = run_page(f"params.set('run', 'nope@x'); {self.serve(sample_board([sample_run()]))} await poll(); $('missing').innerHTML = ''; lastActive = ''; await poll(); return $('missing').innerHTML")
+        self.assertEqual(out, "")
+
+
 if __name__ == "__main__":
     unittest.main()
