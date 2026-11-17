@@ -21,6 +21,7 @@ line, `Run: <run dir>   Task: <id>   Role: <role>`. Costs are API-equivalent est
 model-routing's prices.json, kept per provider.
 """
 import argparse
+import collections
 import errno
 import hashlib
 import glob
@@ -60,7 +61,7 @@ BUCKET_SECONDS = 600  # spend is kept in 10-minute buckets for the sparkline and
 VERDICT = re.compile(r"^\W*(?:status\W*)?(DONE_WITH_CONCERNS|DONE|BLOCKED|FAILED|NEEDS_CONTEXT|APPROVED|CHANGES(?:_REQUESTED)?)\b", re.I)
 DEFAULT_DAYS = 14
 DASHBOARD_APP = "chief-dashboard"
-DASHBOARD_VERSION = 3  # a running dashboard older than this is replaced by the next run
+DASHBOARD_VERSION = 4  # a running dashboard older than this is replaced by the next run
 DEFAULT_PORT = int(os.environ.get("CHIEF_DASHBOARD_PORT") or 8765)
 AUTO_IDLE_HOURS = 6  # a dashboard the chief started exits after this long with no page open
 PROVIDERS = ("claude", "chatgpt")
@@ -1062,6 +1063,63 @@ def resolve_file(run, name):
     return path if path.startswith(os.path.realpath(repo) + os.sep) and os.path.isfile(path) else None
 
 
+def resolve_transcript(run, agent_id, config_dir=None, prices=None):
+    """The transcript of an agent this run knows by id, or None. The id is looked up in the board's own agents,
+    never turned into a path, and the path is checked against the allowed folders here, at serve time."""
+    if not run or not agent_id:
+        return None
+    agent = next((row for row in build_cards([run], config_dir, prices)[0]["agents"] if row["id"] == agent_id), None)
+    path = agent.get("_transcript") if agent else None
+    if not isinstance(path, str) or not path:
+        return None
+    real = os.path.realpath(path)
+    projects = os.path.join(os.path.realpath(config_dir or default_config_dir()), "projects")
+    if os.path.isfile(real) and (inside(projects, real) or inside(run["dir"], real)):
+        return real
+    return None
+
+
+def tool_result_text(content):
+    if isinstance(content, str):
+        return content
+    return " ".join(block.get("text", "") for block in content or [] if isinstance(block, dict))
+
+
+def render_transcript(path, limit=300):
+    """A transcript as plain text, the last `limit` entries, each tool call on one line."""
+    blocks, total = collections.deque(maxlen=limit), 0
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            message = entry.get("message")
+            if message is None:
+                block = f"[{entry.get('type') or '?'}] {line.strip()[:2000]}"
+            elif entry.get("type") in ("user", "assistant") and isinstance(message, dict):
+                parts = [f"[{entry.get('timestamp') or ''}] {entry['type']}"]
+                content = message.get("content")
+                for item in [{"type": "text", "text": content}] if isinstance(content, str) else content or []:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "text":
+                        parts.append(str(item.get("text") or "")[:4000])
+                    elif item.get("type") == "tool_use":
+                        parts.append("→ " + describe_tool(item.get("name"), item.get("input")))
+                    elif item.get("type") == "tool_result":
+                        parts.append(tool_result_text(item.get("content"))[:2000])
+                block = "\n".join(parts)
+            else:
+                continue
+            blocks.append(block)
+            total += 1
+    omitted = total - len(blocks)
+    return "\n\n".join(([f"… {omitted} earlier entries omitted"] if omitted else []) + list(blocks))
+
+
 # ---- the dashboard server ------------------------------------------------------------------
 
 
@@ -1079,6 +1137,15 @@ def refresh_usage_forever(minutes):
         except Exception:
             pass
         time.sleep(60)
+
+
+def request_allowed(handler, data):
+    """Whether a GET may be answered: the Host names this server (a rebinding page carries its own host), and
+    for data the page's own header, which another site cannot add without a CORS preflight this server never answers."""
+    port = handler.server.server_port
+    if handler.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+        return False
+    return not data or handler.headers.get("X-Chief-Dashboard") == "1"
 
 
 class DashboardServer(http.server.ThreadingHTTPServer):
@@ -1221,6 +1288,9 @@ def serve(repo, port, refresh_minutes=5, days=DEFAULT_DAYS, idle_hours=0):
 
         def do_GET(self):
             url = urllib.parse.urlparse(self.path)
+            data = url.path in ("/board.json", "/file", "/transcript")
+            if not request_allowed(self, data):
+                return self.send(403, "This page is out of date — reload it.", "text/plain; charset=utf-8")
             if url.path != "/health":
                 last_request["at"] = time.time()
             if url.path in ("/", "/index.html"):
@@ -1251,6 +1321,17 @@ def serve(repo, port, refresh_minutes=5, days=DEFAULT_DAYS, idle_hours=0):
                     return self.send(404, "not found", "text/plain; charset=utf-8")
                 with open(path, encoding="utf-8", errors="replace") as handle:
                     return self.send(200, handle.read(), "text/plain; charset=utf-8")
+            if url.path == "/transcript":
+                query = urllib.parse.parse_qs(url.query)
+                run = find_run(list_runs(repo), (query.get("run") or [""])[0])
+                path = resolve_transcript(run, (query.get("agent") or [""])[0])
+                if not path:
+                    return self.send(404, "not found", "text/plain; charset=utf-8")
+                try:
+                    text = render_transcript(path)
+                except OSError:
+                    return self.send(404, "not found", "text/plain; charset=utf-8")
+                return self.send(200, text, "text/plain; charset=utf-8")
             return self.send(404, "not found", "text/plain; charset=utf-8")
 
         def do_POST(self):

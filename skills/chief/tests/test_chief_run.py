@@ -762,7 +762,8 @@ class DashboardServerTest(Workspace):
         super().setUp()
         self.port = free_port()
         self.server = subprocess.Popen([sys.executable, "-B", str(SCRIPT), "serve", "--port", str(self.port), "--refresh-usage", "0"],
-                                       cwd=self.repo, env={**os.environ, "CLAUDE_CONFIG_DIR": str(self.config)},
+                                       cwd=self.repo, env={k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+                                       | {"CLAUDE_CONFIG_DIR": str(self.config)},
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(self.server.wait)
         self.addCleanup(self.server.terminate)
@@ -779,6 +780,82 @@ class DashboardServerTest(Workspace):
         except urllib.error.HTTPError as error:
             error.close()
             return error.code, None
+
+    def get(self, path, headers=None):
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", headers=headers or {})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, response.read().decode()
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code, error.read().decode()
+
+    OK = {"X-Chief-Dashboard": "1"}
+
+    def test_transcript_is_served_only_for_known_agents(self):
+        run = self.start(title="X")
+        self.transcript("a1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        key = chief.run_key(str(self.repo.resolve()), run.name)
+        status, text = self.get(f"/transcript?run={key}&agent=claude-a1", self.OK)
+        self.assertEqual(status, 200)
+        self.assertIn("DONE from a1", text)
+        self.assertEqual(self.get(f"/transcript?run={key}&agent=claude-a1")[0], 403)
+        self.assertEqual(self.get(f"/transcript?run={key}&agent=../../etc/passwd", self.OK)[0], 404)
+        self.assertEqual(self.get("/transcript?run=nope&agent=claude-a1", self.OK)[0], 404)
+
+    def test_every_get_checks_the_host_and_data_needs_the_header(self):
+        evil = {"Host": "evil.example:80"}
+        for path in ("/", "/health", "/board.json", "/fonts/instrument-serif.woff2"):
+            self.assertEqual(self.get(path, {**self.OK, **evil})[0], 403, path)
+        self.assertEqual(self.get("/board.json"), (403, "This page is out of date — reload it."))
+        self.assertEqual(self.get("/board.json", self.OK)[0], 200)
+        self.assertEqual(self.get("/file?run=x&name=task")[0], 403)
+        self.assertEqual(self.get("/")[0], 200)
+        self.assertEqual(self.get("/", {"Host": f"localhost:{self.port}"})[0], 200)
+
+    def test_render_transcript_keeps_the_last_entries(self):
+        path = Path(self.folder.name) / "t.jsonl"
+        lines = [{"type": "user", "timestamp": f"t{i}", "message": {"role": "user", "content": f"line {i}"}} for i in range(5)]
+        path.write_text("\n".join(json.dumps(line) for line in lines))
+        text = chief.render_transcript(str(path), limit=2)
+        self.assertTrue(text.startswith("… 3 earlier entries omitted"))
+        self.assertIn("line 4", text)
+        self.assertNotIn("line 1", text)
+
+    def test_the_path_is_checked_again_when_it_is_served(self):
+        run = self.start(title="X")
+        self.transcript("a1", f"Run: {run}   Task: 1   Role: implement", [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})])
+        record = chief.list_runs(str(self.repo))[0]
+        self.assertTrue(chief.resolve_transcript(record, "claude-a1", str(self.config), PRICES))
+        outside = Path(self.folder.name) / "outside.jsonl"
+        outside.write_text("secret")
+        real = chief.build_cards
+
+        def planted(runs, config_dir=None, prices=None):
+            cards = real(runs, config_dir, prices)
+            cards[0]["agents"][0]["_transcript"] = str(outside)
+            return cards
+        with unittest.mock.patch.object(chief, "build_cards", planted):
+            self.assertIsNone(chief.resolve_transcript(record, "claude-a1", str(self.config), PRICES))
+
+    def test_render_transcript_shows_tools_results_and_codex_lines(self):
+        path = Path(self.folder.name) / "t.jsonl"
+        records = [
+            {"type": "assistant", "timestamp": "t1", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "x" * 5000}, {"type": "tool_use", "name": "Read", "input": {"file_path": "/a/b/c.py"}}]}},
+            {"type": "user", "timestamp": "t2", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": [{"type": "text", "text": "y" * 3000}]}]}},
+            {"type": "turn.started", "item": "z" * 3000}]
+        path.write_text("\n".join(json.dumps(line) for line in records) + "\nnot json\n")
+        text = chief.render_transcript(str(path))
+        self.assertIn("[t1] assistant", text)
+        self.assertIn("→ Read b/c.py", text)
+        self.assertIn("x" * 4000, text)
+        self.assertNotIn("x" * 4001, text)
+        self.assertIn("y" * 2000, text)
+        self.assertNotIn("y" * 2001, text)
+        self.assertIn("[turn.started] ", text)
+        self.assertLess(len(text.split("[turn.started] ")[1]), 2100)
 
     def test_the_page_carries_the_robots(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/", timeout=10) as response:
