@@ -695,19 +695,20 @@ async function openLinked(linked) {
   let found = resolveLinked(linked, active.runs)
   if (found.missing) {
     const res = await fetchBoard('/board.json?view=archived')
-    if (res.status !== 403) {
-      const text = await res.text()
-      lastArchived = boardSig(text); archived = JSON.parse(text)
-      found = resolveLinked(linked, archived.runs)
-    }
+    if (res.status === 403) { $('status').textContent = STALE_PAGE; return }
+    const text = await res.text()
+    const sig = boardSig(text), data = JSON.parse(text)
+    lastArchived = sig; archived = data
+    found = resolveLinked(linked, archived.runs)
   }
   if (found.run) { $('missing').innerHTML = ''; openScore(found.run.key); return }
   if (found.ambiguous) {
     $('missing').innerHTML = `<div class="notice"><b>which run?</b><span>“${esc(linked)}” is in ${found.ambiguous.length} checkouts:</span> ${found.ambiguous.map((r) => `<button class="chip" type="button" data-run="${esc(r.key)}">${esc(repoName(r.repo))}</button>`).join(' ')}</div>`
     return
   }
-  const n = (active.repos || []).length
-  $('missing').innerHTML = `<div class="notice"><b>run not found</b><span>No run “${esc(linked)}” is registered with this dashboard. It shows the runs of ${n} checkouts on this machine; a run from a removed worktree or another machine is not here.</span><button class="chip" type="button" data-dismiss-missing>dismiss</button></div>`
+  const n = Array.isArray(active.repos) ? active.repos.length : null
+  const shows = n == null ? 'It shows the runs of the checkouts on this machine' : `It shows the runs of ${n} ${n === 1 ? 'checkout' : 'checkouts'} on this machine`
+  $('missing').innerHTML = `<div class="notice"><b>run not found</b><span>No run “${esc(linked)}” is registered with this dashboard. ${shows}; a run from a removed worktree or another machine is not here.</span><button class="chip" type="button" data-dismiss-missing>dismiss</button></div>`
 }
 
 function renderAll() { renderStage(); renderBar(); renderProgramme(); if (openKey) renderScore() }
@@ -729,12 +730,12 @@ async function poll() {
       else { archived.generated = data2.generated; if (pendingScore) archived = data2 }
     }
     renderStatus()
-    if (!changed && !pendingScore) { if (openKey && !openFile) renderScore(); return }
+    const linked = params.get('run'), linkPending = linked && !linkedOnce
+    if (!changed && !pendingScore && !linkPending) { if (openKey && !openFile) renderScore(); return }
     if (changed) { renderStage(); renderBar(); renderProgramme() }
-    const linked = params.get('run')
-    if (linked && !linkedOnce) {
-      linkedOnce = true
+    if (linkPending) {
       await openLinked(linked)
+      linkedOnce = true  /* only after it completed: a failed archive fetch throws past this and is retried next poll */
     } else if (openKey && !openFile) renderScore()
   } catch {
     $('status').textContent = 'The dashboard server is not answering. The next chief run starts it again, or run: python3 <chief skill>/scripts/chief-run.py dashboard'

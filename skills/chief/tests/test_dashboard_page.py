@@ -281,9 +281,32 @@ class LinkTest(unittest.TestCase):
           await new Promise((r) => setTimeout(r, 0)); return [$('missing').innerHTML, url]""")
         self.assertEqual(out, ["", "/"])
 
-    def test_the_link_is_tried_once(self):
-        out = run_page(f"params.set('run', 'nope@x'); {self.serve(sample_board([sample_run()]))} await poll(); $('missing').innerHTML = ''; lastActive = ''; await poll(); return $('missing').innerHTML")
-        self.assertEqual(out, "")
+    def test_the_link_is_tried_once_after_success_and_retried_after_failure(self):
+        board = json.dumps(sample_board([sample_run()]))
+        out = run_page(f"""params.set('run', 'nope@x'); {self.serve(sample_board([sample_run()]))} await poll()
+          $('missing').innerHTML = ''; lastActive = ''; await poll(); const afterSuccess = $('missing').innerHTML
+          linkedOnce = false; lastActive = ''; let fail = true
+          fetch = async (u) => {{ if (String(u).includes('archived') && fail) return {{ ok: true, status: 200, text: async () => 'not json' }}; return {{ ok: true, status: 200, text: async () => String(u).includes('archived') ? '{json.dumps(sample_board([]))}' : JSON.stringify({board}) }} }}
+          await poll(); const afterFailure = [linkedOnce, $('missing').innerHTML]
+          fail = false; await poll(); return [afterSuccess, afterFailure, linkedOnce, $('missing').innerHTML.includes('run not found')]""")
+        self.assertEqual(out, ["", [False, ""], True, True])
+
+    def test_a_403_on_the_archive_check_asks_for_a_reload(self):
+        board = json.dumps(sample_board([sample_run()]))
+        out = run_page(f"""fetch = async (u) => String(u).includes('archived') ? {{ ok: false, status: 403, text: async () => 'no' }} : {{ ok: true, status: 200, text: async () => JSON.stringify({board}) }}
+          params.set('run', 'nope@x'); await poll(); return [$('status').textContent, $('missing').innerHTML]""")
+        self.assertEqual(out, ["This page is out of date — reload it.", ""])
+
+    def test_the_count_is_plural_aware_and_absent_without_repos(self):
+        def notice(repos):
+            board = {**sample_board([sample_run()]), "repos": repos}
+            return run_page(f"params.set('run', 'nope@x'); {self.serve(board)} await poll(); return $('missing').innerHTML")
+        self.assertIn("1 checkout on this machine", notice([{"repo": "/x/repo", "name": "repo", "git": None}]))
+        self.assertIn("2 checkouts on this machine", notice([{"repo": "/x/repo", "name": "repo", "git": None}, {"repo": "/y/o", "name": "o", "git": None}]))
+        bare = {k: v for k, v in sample_board([sample_run()]).items() if k != "repos"}  # the rest of the page assumes repos, so call openLinked directly
+        absent = run_page(f"active = {json.dumps(bare)}; {self.serve(bare)} await openLinked('nope@x'); return $('missing').innerHTML")
+        self.assertIn("run not found", absent)
+        self.assertNotRegex(absent, r"\d+ checkout")
 
 
 if __name__ == "__main__":
