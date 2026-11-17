@@ -176,5 +176,59 @@ class HeaderTest(unittest.TestCase):
         self.assertRegex(css, r"\.headline\s*\{[^}]*clamp\(26px,\s*3\.4vw,\s*40px\)")
 
 
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class RefreshTest(unittest.TestCase):
+    BOARD = sample_board([sample_run()])
+    SERVE = """fetch = async (url, init) => {{ __fetches.push([String(url), init || {{}}]); return {{ ok: true, text: async () => JSON.stringify({{ ...{board}, generated: String(Math.random()) }}) }} }}"""
+
+    def test_generated_alone_does_not_count_as_a_change(self):
+        a, b = self.BOARD, {**self.BOARD, "generated": "later"}
+        self.assertTrue(run_page(f"return boardSig({json.dumps(json.dumps(a))}) === boardSig({json.dumps(json.dumps(b))})"))
+
+    def test_an_unchanged_board_is_drawn_once(self):
+        n = run_page(self.SERVE.format(board=json.dumps(self.BOARD)) + """
+          let calls = 0; const real = renderProgramme; renderProgramme = () => { calls++; real() }
+          await poll(); await poll(); await poll(); return calls""")
+        self.assertEqual(n, 1)
+
+    def test_polls_send_the_dashboard_header(self):
+        sent = run_page(self.SERVE.format(board=json.dumps(self.BOARD)) + "; await poll(); return __fetches.map(([u, i]) => [u, (i.headers || {})['X-Chief-Dashboard']])")
+        self.assertTrue(sent)
+        self.assertTrue(all(h == "1" for _, h in sent))
+
+    def test_scroll_survives_a_redraw(self):
+        top = run_page(f"""active = {json.dumps(self.BOARD)}; openKey = 'r1@abc'
+          const body = __el(); body.scrollTop = 500; __reg['.s-body'] = [body]
+          renderScore({{ force: true }}); return body.scrollTop""")
+        self.assertEqual(top, 500)
+
+    def test_a_redraw_waits_while_the_user_scrolls(self):
+        out = run_page(f"""active = {json.dumps(self.BOARD)}; openKey = 'r1@abc'; renderScore({{ force: true }})
+          active.runs[0].title = 'Changed'; $('score').__fire('wheel'); $('score').innerHTML = 'MARK'
+          renderScore(); const during = $('score').innerHTML
+          lastInteract -= 5000; renderScore(); return [during, pendingScore, $('score').innerHTML.includes('Changed')]""")
+        self.assertEqual(out, ["MARK", False, True])
+
+    def test_a_held_pointer_defers_the_redraw(self):
+        out = run_page(f"""active = {json.dumps(self.BOARD)}; openKey = 'r1@abc'; renderScore({{ force: true }})
+          active.runs[0].title = 'Changed'; $('score').__fire('pointerdown'); lastInteract -= 5000; $('score').innerHTML = 'MARK'
+          renderScore(); return [$('score').innerHTML, pendingScore]""")
+        self.assertEqual(out, ["MARK", True])
+
+    def test_a_deferred_redraw_lands_on_a_quiet_poll_with_an_unchanged_board(self):
+        fixed = json.dumps(self.BOARD)
+        out = run_page(f"""fetch = async () => ({{ ok: true, status: 200, text: async () => JSON.stringify({fixed}) }})
+          await poll(); openKey = 'r1@abc'; renderScore({{ force: true }})
+          active.runs[0].title = 'Changed'; $('score').__fire('wheel'); $('score').innerHTML = 'MARK'
+          await poll(); const during = $('score').innerHTML
+          lastInteract -= 5000; await poll(); return [during, pendingScore, $('score').innerHTML.includes('CSV export')]""")
+        self.assertEqual(out, ["MARK", False, True])
+
+    def test_a_403_asks_for_a_reload(self):
+        text = run_page("""fetch = async () => ({ ok: false, status: 403, text: async () => 'This page is out of date — reload it.' })
+          await poll(); return $('status').textContent""")
+        self.assertEqual(text, "This page is out of date — reload it.")
+
+
 if __name__ == "__main__":
     unittest.main()

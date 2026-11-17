@@ -258,6 +258,8 @@ const params = new URLSearchParams(location.search)
 let active = null, archived = null, view = 'active', filter = params.get('repo') || null
 let openKey = null, openAgent = null, openFile = null, confirmDone = false, linkedOnce = false
 let lastActive = '', lastArchived = ''
+let pointerDown = false, lastInteract = 0, pendingScore = false, lastScoreSig = ''
+const DASH_HEADERS = { 'X-Chief-Dashboard': '1' }
 
 const $ = (id) => document.getElementById(id)
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
@@ -427,6 +429,10 @@ function renderStage() {
 }
 
 /* ---------- toolbar, notices, programme ---------- */
+function renderStatus() {
+  const b = board()
+  $('status').textContent = b ? `Updated ${new Date(b.generated).toLocaleTimeString()}${b.accounts && b.accounts.as_of ? `, usage as of ${new Date(b.accounts.as_of).toLocaleTimeString()}` : ', no usage reading yet'}. ${b.prices_note}.` : ''
+}
 function renderBar() {
   const runs = board() ? board().runs : []
   const repos = [...new Set(runs.map((r) => r.repo))]
@@ -438,8 +444,7 @@ function renderBar() {
   $('archived-toggle').setAttribute('aria-pressed', view === 'archived')
   const notices = (active ? active.repos : []).filter((r) => (!filter || r.repo === filter) && r.git && (r.git.warnings || []).length)
   $('notices').innerHTML = view === 'archived' ? '' : notices.map((r) => `<div class="notice"><b>git · ${esc(r.name)}${r.git.branch ? ' · ' + esc(r.git.branch) : ''}</b><ul>${r.git.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>`).join('')
-  const b = board()
-  $('status').textContent = b ? `Updated ${new Date(b.generated).toLocaleTimeString()}${b.accounts && b.accounts.as_of ? `, usage as of ${new Date(b.accounts.as_of).toLocaleTimeString()}` : ', no usage reading yet'}. ${b.prices_note}.` : ''
+  renderStatus()
 }
 function roleMix(r) {
   const c = {}
@@ -519,9 +524,19 @@ function figure(kind, vb, extra = '') {
   const [x, y, w, h] = vb.split(' ')
   return `<use href="#r-${kind}" x="${x}" y="${y}" width="${w}" height="${h}" ${extra}/>`
 }
-function renderScore() {
+/* The score is never rebuilt under the reader: a redraw waits while the user scrolls, drags or selects. */
+function selectionInScore() {
+  const sel = window.getSelection()
+  return sel.rangeCount > 0 && !sel.isCollapsed && $('score').contains(sel.getRangeAt(0).commonAncestorContainer)
+}
+function userBusy() { return pointerDown || Date.now() - lastInteract < 2000 || selectionInScore() }
+function renderScore({ force = false } = {}) {
   const r = allRuns().find((x) => x.key === openKey)
   if (!r) return closeScore()
+  if (!force) {
+    if (JSON.stringify(r) === lastScoreSig) return
+    if (userBusy()) { pendingScore = true; lastScoreSig = ''; return }
+  }
   const c = cost(r, 'claude'), g = cost(r, 'chatgpt')
   let tasks = ''
   if ((r.tasks || []).length) {
@@ -564,7 +579,9 @@ function renderScore() {
   const files = ['task', 'plan', 'progress', 'handoff'].filter((n) => n === 'task' || (n === 'plan' ? r.plan : r.workspace))
   side += `<div><div class="label" style="margin-bottom:6px">run files</div><div class="files">${files.map((n) => `<button class="chip" type="button" data-file="${n}" aria-pressed="${openFile === n}">${n}</button>`).join('')}</div>
     <pre class="reply" id="file-view" style="margin-top:8px" ${openFile ? '' : 'hidden'}></pre></div>`
-  const scroll = [...document.querySelectorAll('.s-main, .s-side')].map((el) => el.scrollTop)
+  const keep = ['.s-body', '.s-main', '.s-side', '.reply'].map((s) => [s, 'scrollTop', [...document.querySelectorAll(s)].map((el) => el.scrollTop)])
+    .concat([['.table-wrap', 'scrollLeft', [...document.querySelectorAll('.table-wrap')].map((el) => el.scrollLeft)]])
+  const focused = document.activeElement && document.activeElement.matches && document.activeElement.matches('tr[data-agent]') ? document.activeElement.dataset.agent : null
   const archivable = r.phase === 'done' || r.phase === 'paused' || r.quiet || r.archived
   const action = r.archived ? `<button class="close" type="button" data-archive="restore">restore</button>`
     : archivable ? `<button class="close" type="button" data-archive="archive">archive</button>` : ''
@@ -577,17 +594,19 @@ function renderScore() {
         <div class="actions">${action}<button class="close" id="close" type="button">close · esc</button></div></div></div>
     <div class="measures">${measures(r)}</div>
     <div class="s-body"><div class="s-main">${tasks}<section><div class="sec-head"><h3>Sections</h3><span class="mix">pick a player to read it</span></div>${sections}</section></div><aside class="s-side">${side}</aside></div>`
-  document.querySelectorAll('.s-main, .s-side').forEach((el, i) => { el.scrollTop = scroll[i] || 0 })
+  if (focused) { const row = [...document.querySelectorAll('tr[data-agent]')].find((el) => el.dataset.agent === focused); if (row) row.focus({ preventScroll: true }) }
+  keep.forEach(([s, prop, saved]) => document.querySelectorAll(s).forEach((el, i) => { el[prop] = saved[i] || 0 }))
+  lastScoreSig = JSON.stringify(r); pendingScore = false
   if (openFile) loadFile(r.key, openFile)
 }
 async function loadFile(key, name) {
   try {
-    const res = await fetch(`/file?run=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, { cache: 'no-store' })
+    const res = await fetch(`/file?run=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`, { cache: 'no-store', headers: DASH_HEADERS })
     const text = res.ok ? await res.text() : `The ${name} file is not there yet.`
     if ($('file-view')) $('file-view').textContent = text
   } catch { if ($('file-view')) $('file-view').textContent = 'The dashboard server stopped. The next chief run starts it again.' }
 }
-function openScore(key) { if (openKey !== key) { openAgent = null; openFile = null } openKey = key; $('score').hidden = false; $('curtain').hidden = false; renderScore(); if ($('close')) $('close').focus() }
+function openScore(key) { if (openKey !== key) { openAgent = null; openFile = null } openKey = key; $('score').hidden = false; $('curtain').hidden = false; renderScore({ force: true }); if ($('close')) $('close').focus() }
 function closeScore() { openKey = null; $('score').hidden = true; $('curtain').hidden = true }
 
 /* ---------- archive ---------- */
@@ -612,9 +631,9 @@ document.addEventListener('click', async (e) => {
   if (t.closest('#archived-toggle')) { view = view === 'archived' ? 'active' : 'archived'; filter = null; await poll(); renderAll(); return }
   if (t.closest('#close')) return closeScore()
   const file = t.closest('[data-file]')
-  if (file) { openFile = openFile === file.dataset.file ? null : file.dataset.file; renderScore(); return }
+  if (file) { openFile = openFile === file.dataset.file ? null : file.dataset.file; renderScore({ force: true }); return }
   const agent = t.closest('[data-agent]')
-  if (agent) { openAgent = agent.dataset.agent; renderScore(); return }
+  if (agent) { openAgent = agent.dataset.agent; renderScore({ force: true }); return }
   const run = t.closest('[data-run]')
   if (run) return openScore(run.dataset.run)
   const repo = t.closest('[data-repo]')
@@ -632,20 +651,46 @@ document.addEventListener('keydown', (e) => {
 })
 $('curtain').addEventListener('click', closeScore)
 
+/* What the user is doing in the score, so a poll never rebuilds it under their hands. */
+const touch = () => { lastInteract = Date.now() }
+$('score').addEventListener('pointerdown', () => { pointerDown = true; touch() })
+$('score').addEventListener('wheel', touch)
+$('score').addEventListener('scroll', touch, { capture: true })
+$('score').addEventListener('touchmove', touch)
+$('score').addEventListener('keydown', touch)
+document.addEventListener('pointerup', () => { pointerDown = false })
+document.addEventListener('pointercancel', () => { pointerDown = false })
+
+/* The board without its timestamp: `generated` differs on every poll, so it must not count as a change. */
+function boardSig(text) {
+  const b = JSON.parse(text)
+  delete b.generated
+  return JSON.stringify(b)
+}
+const fetchBoard = (url) => fetch(url, { cache: 'no-store', headers: DASH_HEADERS })
+const STALE_PAGE = 'This page is out of date — reload it.'
+
 function renderAll() { renderStage(); renderBar(); renderProgramme(); if (openKey) renderScore() }
 async function poll() {
   try {
-    const res = await fetch('/board.json', { cache: 'no-store' })
+    const res = await fetchBoard('/board.json')
+    if (res.status === 403) { $('status').textContent = STALE_PAGE; return }
     const text = await res.text()
-    let changed = text !== lastActive
-    if (changed) { lastActive = text; active = JSON.parse(text) }
+    const sig = boardSig(text), data = JSON.parse(text)
+    let changed = sig !== lastActive
+    if (changed) { lastActive = sig; active = data }
+    else { active.generated = data.generated; if (pendingScore) active = data }
     if (view === 'archived') {
-      const res2 = await fetch('/board.json?view=archived', { cache: 'no-store' })
+      const res2 = await fetchBoard('/board.json?view=archived')
+      if (res2.status === 403) { $('status').textContent = STALE_PAGE; return }
       const text2 = await res2.text()
-      if (text2 !== lastArchived) { lastArchived = text2; archived = JSON.parse(text2); changed = true }
+      const sig2 = boardSig(text2), data2 = JSON.parse(text2)
+      if (sig2 !== lastArchived) { lastArchived = sig2; archived = data2; changed = true }
+      else { archived.generated = data2.generated; if (pendingScore) archived = data2 }
     }
-    if (!changed) return
-    renderStage(); renderBar(); renderProgramme()
+    renderStatus()
+    if (!changed && !pendingScore) { if (openKey && !openFile) renderScore(); return }
+    if (changed) { renderStage(); renderBar(); renderProgramme() }
     const linked = params.get('run')
     if (linked && !linkedOnce) {
       linkedOnce = true
