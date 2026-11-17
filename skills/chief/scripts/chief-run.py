@@ -391,7 +391,7 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
         if text:
             last_text = text
     tokens = {"input": 0, "output": 0, "cache_write_5m": 0, "cache_write_1h": 0, "cache_read": 0}
-    cost, unpriced, model, spend = 0.0, False, None, {}
+    cost, unpriced, model, spend, sizes = 0.0, False, None, {}, []
     for message_id, message in messages.items():
         usage = message["usage"]
         split = usage.get("cache_creation") or {}
@@ -401,6 +401,8 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
         tokens["cache_read"] += usage.get("cache_read_input_tokens", 0) or 0
         tokens["cache_write_1h"] += write_1h
         tokens["cache_write_5m"] += (usage.get("cache_creation_input_tokens", 0) or 0) - write_1h
+        sizes.append((usage.get("input_tokens", 0) or 0) + (usage.get("cache_read_input_tokens", 0) or 0)
+                     + (usage.get("cache_creation_input_tokens", 0) or 0))
         model = message.get("model") or model
         price = price_claude(message.get("model"), usage, prices)
         if price is None:
@@ -412,9 +414,10 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
                 spend[bucket] = spend.get(bucket, 0.0) + price
     done = bool(last_entry and last_entry.get("type") == "assistant"
                 and (last_entry.get("message") or {}).get("stop_reason") == "end_turn")
+    context = {"last": sizes[-1], "peak": max(sizes)} if sizes else None
     return {"tokens": tokens, "cost_usd": None if unpriced else round(cost, 6), "model": model,
             "report": last_text[-6000:], "started": first_at, "ended": last_at if done else None, "done": done,
-            "acts": [act for act in reversed(acts[-6:])], "spend": spend}
+            "acts": [act for act in reversed(acts[-6:])], "spend": spend, "context": context}
 
 
 def parse_subagent(path, prices):
@@ -476,7 +479,7 @@ def claude_agents(config_dir, runs, prices):
                     "description": parsed["description"], "status": status, "started": parsed["started"],
                     "ended": parsed["ended"], "tokens": parsed["tokens"], "cost_usd": parsed["cost_usd"],
                     "report": parsed["report"], "verdict": verdict, "acts": parsed["acts"], "active": mtime,
-                    "_spend": parsed["spend"]})
+                    "context": parsed["context"], "_spend": parsed["spend"]})
                 break
     for run in runs:
         chief = chief_session(config_dir, run, prices, since)
@@ -516,7 +519,7 @@ def chief_session(config_dir, run, prices, since):
                 "description": "the chief session", "status": status,
                 "started": run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
                 "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
-                "active": mtime, "_spend": parsed["spend"]}
+                "active": mtime, "context": parsed["context"], "_spend": parsed["spend"]}
     return None
 
 
@@ -599,7 +602,7 @@ def codex_agents(run_dir, prices):
             "ended": record.get("ended"), "thread_id": record.get("thread_id"), "resumed": bool(record.get("resumed")),
             "tokens": {key: usage.get(key, 0) or 0 for key in ("input", "cached", "output", "reasoning")},
             "cost_usd": cost, "report": report[-6000:], "verdict": verdict, "acts": acts,
-            "active": active or parse_time(record.get("ended") or record.get("started")), "_spend": spend})
+            "active": active or parse_time(record.get("ended") or record.get("started")), "context": None, "_spend": spend})
     latest = {}
     for agent in agents:
         if agent["thread_id"]:

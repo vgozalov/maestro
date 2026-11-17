@@ -177,6 +177,19 @@ class BoardTest(Workspace):
         self.assertEqual(agent["model"], "claude-opus-5-5")
         self.assertIn("DONE from a1", agent["report"])
 
+    def test_each_claude_agent_reports_its_last_and_peak_context(self):
+        run = self.start(title="X")
+        self.transcript("c1", f"Run: {run}   Task: 1   Role: implement", [
+            ("claude-sonnet-5-5", {"input_tokens": 100, "output_tokens": 5, "cache_read_input_tokens": 50_000, "cache_creation_input_tokens": 2_000}),
+            ("claude-sonnet-5-5", {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 30_000, "cache_creation_input_tokens": 0}),
+        ])
+        self.codex_record(run, "build-2")
+        card = next(item for item in self.board()["runs"] if item["id"] == run.name)
+        worker = next(a for a in card["agents"] if a["id"] == "claude-c1")
+        self.assertEqual(worker["context"], {"last": 30_010, "peak": 52_100})
+        self.assertIsNone(next(a for a in card["agents"] if a["provider"] == "chatgpt")["context"])
+        self.assertNotIn("context", worker["tokens"])
+
     def test_cache_writes_and_reads_use_their_own_prices(self):
         usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 1_000_000,
                  "cache_creation_input_tokens": 2_000_000,
