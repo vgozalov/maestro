@@ -163,5 +163,18 @@ class LayoutTest(unittest.TestCase):
         self.assertIn("non-scaling-stroke", spark)
 
 
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class HeaderTest(unittest.TestCase):
+    def test_gauges_come_first_in_one_wrapping_row(self):
+        html = PAGE.read_text()
+        self.assertLess(html.index('id="meters"'), html.index('id="ledger"'))
+        self.assertRegex(page_css(), r"\.right\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap")
+
+    def test_the_header_is_shorter(self):
+        css = page_css()
+        self.assertRegex(css, r"\.meter svg\s*\{[^}]*width:\s*100px[^}]*height:\s*58px")
+        self.assertRegex(css, r"\.headline\s*\{[^}]*clamp\(26px,\s*3\.4vw,\s*40px\)")
+
+
 if __name__ == "__main__":
     unittest.main()
