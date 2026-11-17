@@ -5,7 +5,7 @@
 ### Chief: dashboard fixes
 
 - Fixed: tag paths with spaces (#9).
-- Fixed: an unknown run link says so (#1).
+- Fixed: an unknown `?run=` link shows a "Run not found" state (#1). One shared dashboard for every repo is kept.
 - Fixed: polling never rebuilds the score while you scroll, drag or select (#3).
 - Fixed: gauges and metrics sit in one row (#4).
 - Cards are at most 360px wide and never squeezed below 260px; the programme scrolls sideways on small screens. The page is no longer capped at 1600px, and the staff, measures and sparkline stay crisp.
@@ -13,7 +13,7 @@
 - Context size is shown per Claude agent; Codex agents show as not reported (#8).
 - Every dashboard request checks its Host and header.
 - `DASHBOARD_VERSION` is 4: a running dashboard from an earlier version is replaced.
-- The stage is redesigned: each chief run gets its own small stage, with up to 10 playing agents seated by role.
+- The stage is redesigned: each chief run is its own small stage with a proscenium and curtains, and up to 10 playing robot agents grouped by role. The chief conducts while agents work and turns to face the audience on joins, finishes and phase changes.
 
 ## 1.1.0 (2026-11-14)
 
