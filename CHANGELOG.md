@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0 (2026-11-17)
+
+### Chief: dashboard fixes
+
+- Fixed: tag paths with spaces (#9).
+- Fixed: an unknown run link says so (#1).
+- Fixed: polling never rebuilds the score while you scroll, drag or select (#3).
+- Fixed: gauges and metrics sit in one row (#4).
+- Cards are at most 360px wide and never squeezed below 260px; the programme scrolls sideways on small screens. The page is no longer capped at 1600px, and the staff, measures and sparkline stay crisp.
+- Session badge and sibling runs, chat title, resume command, VS Code link, and read-only transcripts (#6, #7).
+- Context size is shown per Claude agent; Codex agents show as not reported (#8).
+- Every dashboard request checks its Host and header.
+- `DASHBOARD_VERSION` is 4: a running dashboard from an earlier version is replaced.
+- The stage is redesigned: each chief run gets its own small stage, with up to 10 playing agents seated by role.
+
 ## 1.1.0 (2026-11-14)
 
 ### Maestro: one plugin for Claude Code and Codex
