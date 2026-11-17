@@ -145,6 +145,16 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(heads(run_page(f"return cardStaff({json.dumps(sample_run(phase='implement', tasks=wide))})")), {("3.12", "2.2")})
         self.assertRegex(page_css(), r"\.staff\s*\{[^}]*width:\s*100%[^}]*height:\s*30px")
 
+    def test_measures_never_scale_above_one_and_scroll_when_narrow(self):
+        css = page_css()
+        self.assertRegex(css, r"\.measures\s*\{[^}]*overflow-x:\s*auto")
+        self.assertRegex(css, r"\.measures svg\s*\{[^}]*min-width:\s*760px")
+        phases = [{"phase": "intake", "at": "2026-11-17T00:00:00Z"}, {"phase": "plan", "at": "2026-11-17T00:10:00Z"}]
+        svg = run_page(f"return measures({json.dumps(sample_run(phases=phases))})")
+        width = re.search(r'viewBox="0 0 (\d+) 60"', svg).group(1)
+        self.assertGreaterEqual(int(width), 760)
+        self.assertIn(f'style="max-width:{width}px"', svg)
+
     def test_measures_and_sparkline_do_not_distort(self):
         phases = [{"phase": "intake", "at": "2026-11-17T00:00:00Z"}, {"phase": "plan", "at": "2026-11-17T00:10:00Z"}]
         self.assertNotIn("preserveAspectRatio", run_page(f"return measures({json.dumps(sample_run(phases=phases))})"))

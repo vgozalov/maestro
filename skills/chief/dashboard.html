@@ -148,7 +148,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .close { font: 500 12px/1 var(--f-mono); border: 1.5px solid var(--line); padding: 9px 12px; border-radius: 10px; }
 .close:hover { border-color: var(--gold); }
 .measures { padding: 10px 20px 12px; border-bottom: 1.5px solid var(--line); overflow-x: auto; }
-.measures svg { display: block; width: 100%; min-width: 640px; height: auto; }
+.measures svg { display: block; width: 100%; min-width: 760px; height: auto; }
 .s-body { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr); min-height: 0; }
 .s-main { overflow: auto; padding: 16px 20px 22px; display: grid; gap: 20px; align-content: start; }
 .s-side { overflow: auto; border-left: 1.5px solid var(--line); padding: 16px 20px 22px; display: grid; gap: 14px; align-content: start; background: rgba(10,6,4,.35); }
@@ -511,7 +511,9 @@ function measures(r) {
     x += w
   })
   s += `<path d="M ${x} 14 V 38 M ${x + 4} 14 V 38" stroke="rgba(228,176,74,.7)" stroke-width="1.6"/>`
-  return `<svg viewBox="0 0 ${x + 8} 60" role="img" aria-label="Time in each phase">${s}</svg>`
+  // Never scale above 1:1 (max-width = the viewBox width); below that the container scrolls (CSS min-width).
+  const vw = Math.round(x + 8)
+  return `<svg viewBox="0 0 ${vw} 60" style="max-width:${vw}px" role="img" aria-label="Time in each phase">${s}</svg>`
 }
 function figure(kind, vb, extra = '') {
   const [x, y, w, h] = vb.split(' ')
