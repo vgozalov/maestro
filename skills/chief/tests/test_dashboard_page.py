@@ -372,6 +372,14 @@ class SessionTest(unittest.TestCase):
                          "cd '/a/My Project/it'\\''s' && claude --resume abc")
         self.assertEqual(run_page("return resumeCommand({cwd: null, repo: '/r'}, 'abc')"), "cd '/r' && claude --resume abc")
 
+    def test_a_session_id_that_is_not_a_plain_token_gets_no_command_or_link(self):
+        self.assertIsNone(run_page("return resumeCommand({cwd: '/r'}, 'a;rm -rf ~')"))
+        chief = {**self.CHIEF, "session_id": "a;rm -rf ~"}
+        board = sample_board([sample_run(agents=[chief], cwd="/x/repo")])
+        html = run_page(f"active = {json.dumps(board)}; openKey = 'r1@abc'; openAgent = 'chief'; renderScore({{ force: true }}); return $('score').innerHTML")
+        for banned in ("claude --resume", "vscode://", "data-copy", "rm -rf ~"):
+            self.assertNotIn(banned, html)
+
     def test_the_chief_row_links_to_its_chat(self):
         html = self.score("chief", cwd="/x/My repo")
         self.assertIn("vscode://anthropic.claude-code/open?session=1a2b3c4d-aaaa", html)

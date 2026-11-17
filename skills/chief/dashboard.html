@@ -467,7 +467,9 @@ function sessionCounts(runs) {
   return n
 }
 const shellQuote = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'"
-const resumeCommand = (run, sessionId) => `cd ${shellQuote(run.cwd || run.repo)} && claude --resume ${sessionId}`
+const SESSION_ID = /^[A-Za-z0-9_-]+$/
+const resumeCommand = (run, sessionId) => typeof sessionId === 'string' && SESSION_ID.test(sessionId)
+  ? `cd ${shellQuote(run.cwd || run.repo)} && claude --resume ${sessionId}` : null
 function sessionBadge(r) {
   if (!r.session_id) return ''
   const n = sessionTotals[r.session_id] || 1
@@ -600,6 +602,7 @@ function renderScore({ force = false } = {}) {
       ${(sel.acts || []).length ? `<div><div class="label" style="margin-bottom:6px">${lit ? 'now playing' : 'last tool calls'}</div><div class="acts">${sel.acts.map(([t, w]) => `<div><span>${esc(ago(t))}</span><span>${esc(w)}</span></div>`).join('')}</div></div>` : ''}
       ${sel.kind === 'chief' && sel.session_id ? (() => {
         const command = resumeCommand(r, sel.session_id)
+        if (!command) return ''  // a session id that is not a plain token gets neither the command nor the link
         return `<div class="links"><code>${esc(command)}</code>
           <button class="chip" type="button" data-copy="${esc(command)}">copy resume command</button>
           <a class="chip" href="${esc('vscode://anthropic.claude-code/open?session=' + encodeURIComponent(sel.session_id))}">open in VS Code</a>
