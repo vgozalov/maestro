@@ -101,6 +101,12 @@ class StartRunTest(Workspace):
             self.assertEqual(json.loads((self.start() / "run.json").read_text())["session_id"], "abc-123")
         self.assertIsNone(json.loads((self.start() / "run.json").read_text())["session_id"])  # setUp removed it
 
+    def test_an_invalid_session_id_is_recorded_as_null(self):
+        for bad in ("../*", "a/b", "x" * 81, "abc\n"):
+            with unittest.mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": bad}):
+                self.assertIsNone(json.loads((self.start() / "run.json").read_text())["session_id"])
+            self.assertIsNone(json.loads((self.start(session_id=bad) / "run.json").read_text())["session_id"])
+
     def test_start_saves_the_task_verbatim_and_hides_runs_from_git(self):
         run = self.start(title="CSV export")
         task = (run / "task.md").read_text()
@@ -168,6 +174,11 @@ class SessionLinkTest(Workspace):
         row = self.chief_row(run)
         self.assertEqual((row["session_id"], row["tokens"]["input"], row["has_transcript"]), ("bbbb2222", 100, True))
         self.assertEqual(self.card(run)["session_id"], "bbbb2222")
+
+    def test_a_tampered_session_id_never_reaches_the_card(self):
+        run = self.start(title="X")
+        self.record_session(run, "../../etc/x")
+        self.assertIsNone(self.card(run)["session_id"])
 
     def test_without_a_session_id_the_scan_still_finds_the_chief(self):
         run = self.start(title="X")

@@ -198,7 +198,7 @@ def start_run(repo, text, title=None, source="chat", now=None, session_id=None):
     write_json(os.path.join(run_dir, "run.json"), {
         "id": run_id, "title": title, "source": source, "repo": repo, "started": started, "ended": None,
         "phase": "intake", "plan": None, "workspace": None,
-        "session_id": session_id or os.environ.get("CLAUDE_CODE_SESSION_ID") or None,
+        "session_id": plain_session_id(session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")),
         "phases": [{"phase": "intake", "at": started, "usage": usage_snapshot()}],
     })
     try:
@@ -247,7 +247,7 @@ def set_phase(run_dir, phase, plan=None, workspace=None):
     at = now_iso()
     state["phase"] = phase
     if not state.get("session_id"):  # a run from before the id was recorded learns it at its next phase
-        state["session_id"] = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
+        state["session_id"] = plain_session_id(os.environ.get("CLAUDE_CODE_SESSION_ID"))
     state["phases"].append({"phase": phase, "at": at, "usage": usage_snapshot()})
     if plan:
         state["plan"] = plan
@@ -323,6 +323,11 @@ def price_codex(model, usage, prices):
 _TRANSCRIPTS = {}
 _SESSIONS = {}
 SESSION_ID = re.compile(r"^[A-Za-z0-9-]{1,80}$")
+
+
+def plain_session_id(value):
+    """The id when it is a plain session id, else None."""
+    return value if isinstance(value, str) and SESSION_ID.fullmatch(value) else None
 
 
 def prompt_text(entry):
@@ -509,16 +514,16 @@ def session_text(path):
 
 def session_transcript(config_dir, session_id):
     """The main-session transcript for a session id, or None; an id that is not plain is never globbed."""
-    if not isinstance(session_id, str) or not SESSION_ID.match(session_id):
+    if not plain_session_id(session_id):
         return None
     matches = sorted(glob.glob(os.path.join(glob.escape(config_dir), "projects", "*", session_id + ".jsonl")))
     return matches[0] if matches else None
 
 
-def jsonl_records(text, marker):
-    """The JSON records of the lines containing marker; lines that do not parse are skipped."""
+def jsonl_records(text, *markers):
+    """The JSON records of the lines containing any marker; lines that do not parse are skipped."""
     for line in text.splitlines():
-        if marker in line:
+        if any(marker in line for marker in markers):
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
@@ -530,7 +535,7 @@ def jsonl_records(text, marker):
 def chat_title(text):
     """The chat's title: the last non-empty custom title, else the last AI-written one."""
     custom = ai = None
-    for record in jsonl_records(text, "title"):
+    for record in jsonl_records(text, "custom-title", "ai-title"):
         kind = record.get("type")
         if kind not in ("custom-title", "ai-title"):
             continue
@@ -912,7 +917,7 @@ def build_cards(runs, config_dir=None, prices=None):
         card = {key: run.get(key) for key in ("key", "id", "title", "source", "phase", "phases", "started", "ended",
                                               "plan", "workspace", "dir", "repo", "archived")}
         chief_row = next((agent for agent in agents if agent["id"] == "chief"), None) or {}
-        card.update(session_id=chief_row.get("session_id") or run.get("session_id"),
+        card.update(session_id=chief_row.get("session_id") or plain_session_id(run.get("session_id")),
                     chat_title=chief_row.get("chat_title"), cwd=chief_row.get("cwd") or run.get("repo"))
         last = max([parse_time(entry.get("at")) or 0 for entry in run.get("phases") or []]
                    + [agent.get("active") or 0 for agent in agents] + [parse_time(run.get("started")) or 0])
