@@ -5,7 +5,8 @@ except --start-run and --end-run, which create or remove the run marker inside t
 Checks: branch and upstream; Stop hooks that auto-commit (project, local and user settings),
 and whether they skip orchestrator runs; skip-worktree and assume-unchanged files whose working
 copy differs from HEAD (their changes never reach a commit); stray backup files such as
-`<file>-E` from `sed -i -E` on macOS; generic auto-save commits since the base. `warnings`
+`<file>-E` from `sed -i -E` on macOS; generic auto-save commits since the base; model attribution trailers (Co-Authored-By, "Generated
+with") in commit messages since the base. `warnings`
 lists only what needs action.
 
 An auto-save Stop hook skips orchestrator runs when its first line is:
@@ -22,6 +23,11 @@ import time
 MARKER = "chief-run"
 BACKUP_SUFFIXES = ("-E", ".orig", ".bak", ".rej", "~")
 AUTO_SAVE_SUBJECT = re.compile(r"auto[- ]?save|checkpoint|^wip\b", re.IGNORECASE)
+MODEL_NAMES = r"(?:claude|anthropic|chatgpt|openai|codex|gpt)"
+ATTRIBUTION_LINE = re.compile(
+    rf"^[ \t]*co-authored-by:[^\n]*\b{MODEL_NAMES}\b|^[^\w\n]*generated with\b[^\n]*\b(?:{MODEL_NAMES}|ai)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 COMMITS = re.compile(r"\bgit\b[^\n;&|]*\bcommit\b")
 PATH_TOKEN = re.compile(r"[^\s\"';&|()]+")
 STOP_EVENTS = ("Stop", "SubagentStop")
@@ -65,6 +71,15 @@ def auto_save_commits(repo, merge_base):
     log = text(git(repo, "log", "--format=%h%x09%s", f"{merge_base}..HEAD")) or ""
     commits = [line.split("\t", 1) for line in log.splitlines() if "\t" in line]
     return [{"sha": sha, "subject": subject} for sha, subject in commits if AUTO_SAVE_SUBJECT.search(subject)]
+
+
+def attribution_commits(repo, merge_base):
+    """Commits since the base whose message carries a model Co-Authored-By trailer or a "Generated with" line."""
+    if not merge_base:
+        return []
+    log = text(git(repo, "log", "--format=%x1e%h%x1f%B", f"{merge_base}..HEAD")) or ""
+    commits = [record.split("\x1f", 1) for record in log.split("\x1e") if "\x1f" in record]
+    return [{"sha": sha.strip()} for sha, message in commits if ATTRIBUTION_LINE.search(message)]
 
 
 def head_bytes(repo, path):
@@ -171,6 +186,10 @@ def warnings_for(result):
     if result["auto_save_commits"]:
         count = len(result["auto_save_commits"])
         warnings.append(f"{count} auto-save commit(s) since {result['base']}: offer the user one descriptive conventional commit in their place")
+    if result["attribution_commits"]:
+        found = result["attribution_commits"]
+        shas = ", ".join(entry["sha"] for entry in found[:3]) + (", ..." if len(found) > 3 else "")
+        warnings.append(f"{len(found)} commit(s) since {result['base']} carry a model attribution trailer ({shas}): strip the trailers before pushing")
     return warnings
 
 
@@ -186,6 +205,7 @@ def report(repo, base=None, home=None):
         "skip_worktree": skip_worktree_files(repo),
         "stray_files": stray_files(repo, merge_base),
         "auto_save_commits": auto_save_commits(repo, merge_base),
+        "attribution_commits": attribution_commits(repo, merge_base),
     }
     result["warnings"] = warnings_for(result)
     return result
