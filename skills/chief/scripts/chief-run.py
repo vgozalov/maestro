@@ -411,10 +411,22 @@ def cache_ttl(usage, written_ttl):
     return written_ttl, None
 
 
-def parse_messages(lines, prices, start=None, end=None, sidechain=None):
-    """Usage, cost, recent tool calls, spend per 10 minutes and the last reply over a transcript's assistant messages."""
+def record_key(entry):
+    """What names a user or assistant record across transcripts: an assistant message's id (a streamed message is
+    written more than once), else the record's uuid. A resumed chat can start as a verbatim copy of the old one."""
+    message = entry.get("message")
+    if entry.get("type") == "assistant" and isinstance(message, dict) and message.get("id"):
+        return "message:" + str(message["id"])
+    return "uuid:" + str(entry["uuid"]) if entry.get("uuid") else None
+
+
+def parse_messages(lines, prices, start=None, end=None, sidechain=None, seen=None):
+    """Usage, cost, recent tool calls, spend per 10 minutes and the last reply over a transcript's assistant messages.
+
+    `seen` is shared by the transcripts of one run, oldest first: a record an earlier one already counted is skipped
+    as if absent (cost, start, last message, cache), and this transcript's own records are added to it afterwards."""
     messages, last_text, last_entry, first_at, last_at = {}, "", None, None, None
-    acts, stamps = [], {}
+    acts, stamps, mine = [], {}, set()
     last_cache, written_ttl = None, None  # the newest message's (time, ttl), and the ttl of the latest cache write
     for line in lines:
         try:
@@ -426,6 +438,11 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
             continue
         if sidechain is not None and bool(entry.get("isSidechain")) != sidechain:
             continue
+        key = record_key(entry) if entry.get("type") in ("user", "assistant") else None
+        if key and seen and key in seen:
+            continue  # a copy of a record an earlier transcript counted
+        if key:
+            mine.add(key)  # only after the pass: a message streamed twice in one transcript still counts once, by its last copy
         if entry.get("type") in ("user", "assistant"):
             last_entry = entry
             first_at = first_at or entry.get("timestamp")
@@ -466,6 +483,8 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
             if stamps.get(message_id):
                 bucket = int(stamps[message_id] // BUCKET_SECONDS)
                 spend[bucket] = spend.get(bucket, 0.0) + price
+    if seen is not None:
+        seen.update(mine)
     done = bool(last_entry and last_entry.get("type") == "assistant"
                 and (last_entry.get("message") or {}).get("stop_reason") == "end_turn")
     context = {"last": sizes[-1], "peak": max(sizes)} if sizes else None
@@ -602,17 +621,22 @@ def session_cwd(text):
     return None
 
 
-def read_chief_session(run, prices, path, text, sure, started):
-    """One chief session's own tokens, inside the run's time; None when its transcript cannot be stamped."""
-    parsed = parse_messages(text.splitlines(), prices, start=parse_time(run["started"]) - 120, end=parse_time(run.get("ended")), sidechain=False)
+def read_chief_session(run, prices, path, text, sure, seen, first):
+    """One chief session's own tokens, inside the run's time, without the records `seen` says an earlier session
+    counted; None when its transcript cannot be stamped. It starts at its own first message; a session with none
+    yet (a resumed chat that is only a copy so far) starts when its file was last written, and the run's first
+    session, with no message in the run's time, at the run's start."""
+    parsed = parse_messages(text.splitlines(), prices, start=parse_time(run["started"]) - 120, end=parse_time(run.get("ended")),
+                            sidechain=False, seen=seen)
     try:
         active = parse_time(parsed["last_at"]) or os.path.getmtime(path)
     except OSError:
         return None
+    started = parsed["started"] or (run["started"] if first else datetime.fromtimestamp(active, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     status = "done" if run.get("ended") else ("running" if time.time() - active < STALE_SECONDS else "stopped")
     return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
             "description": "the chief session", "status": status,
-            "started": started or parsed["started"] or run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
+            "started": started, "ended": run.get("ended"), "tokens": parsed["tokens"],
             "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
             "active": active, "context": parsed["context"], "_spend": parsed["spend"],
             "cache": None if run.get("ended") else parsed["cache"],
@@ -644,8 +668,8 @@ def chief_sessions(config_dir, run, prices, since):
             if text and run["id"] in text:
                 found.append((path, text, run["dir"] in text))  # an id alone is a loose match
                 break
-    rows = [row for row in (read_chief_session(run, prices, *item, started=run["started"] if index == 0 else None)
-                            for index, item in enumerate(found)) if row]
+    seen = set()  # the records each session counts; a resumed chat's copy of an earlier one's is not counted again
+    rows = [row for row in (read_chief_session(run, prices, *item, seen, index == 0) for index, item in enumerate(found)) if row]
     for row in rows[:-1]:
         row.update(id="chief-" + row["session_id"], description="an earlier chief session")
     return rows

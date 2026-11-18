@@ -972,19 +972,41 @@ class ResumedRunTest(Workspace):
         """A main session whose last message came `offset` seconds after the run began. Returns its transcript path."""
         base = {"sessionId": session_id, "isSidechain": False, "cwd": cwd or str(self.repo)}
         lines = [
-            {**base, "type": "user", "timestamp": self.stamp(self.BEGAN + offset - 30), "message": {"role": "user", "content": "/chief add CSV export"}},
-            {**base, "type": "assistant", "timestamp": self.stamp(self.BEGAN + offset), "message": {
+            {**base, "type": "user", "uuid": f"{session_id}-user", "timestamp": self.stamp(self.BEGAN + offset - 30),
+             "message": {"role": "user", "content": "/chief add CSV export"}},
+            {**base, "type": "assistant", "uuid": f"{session_id}-assistant", "timestamp": self.stamp(self.BEGAN + offset), "message": {
                 "id": f"msg_{session_id}", "model": "claude-opus-5-5", "role": "assistant", "stop_reason": "tool_use",
                 "usage": usage or self.FIRST_USAGE,
                 "content": [{"type": "tool_use", "name": "Bash", "input": {"command": f"python3 chief-run.py {verb} {run.name}  # {run}"}}]}},
         ]
         if title:
             lines.append({"type": "ai-title", "aiTitle": title})
+        return self.write_session(session_id, lines, age)
+
+    def write_session(self, session_id, lines, age=None):
         path = self.config / "projects" / "-repo" / f"{session_id}.jsonl"
         path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
         stale = time.time() - 86400 if age is None else time.time() - age
         os.utime(path, (stale, stale))
         return path
+
+    def replayed(self, run, source, session_id, offset=None, usage=None, title=None):
+        """A resumed chat: a transcript that starts as a verbatim copy of `source` (the old session id, uuids, message ids,
+        timestamps and usage, as Claude Code writes it), then adds its own messages when `offset` is given."""
+        lines = [json.loads(line) for line in source.read_text().splitlines()]
+        if offset is not None:
+            base = {"sessionId": session_id, "isSidechain": False, "cwd": str(self.repo)}
+            lines += [
+                {**base, "type": "user", "uuid": f"{session_id}-user", "timestamp": self.stamp(self.BEGAN + offset - 30),
+                 "message": {"role": "user", "content": "carry on"}},
+                {**base, "type": "assistant", "uuid": f"{session_id}-assistant", "timestamp": self.stamp(self.BEGAN + offset), "message": {
+                    "id": f"msg_{session_id}", "model": "claude-opus-5-5", "role": "assistant", "stop_reason": "tool_use",
+                    "usage": usage or self.SECOND_USAGE,
+                    "content": [{"type": "tool_use", "name": "Bash", "input": {"command": f"python3 chief-run.py phase {run.name}"}}]}},
+            ]
+        if title:
+            lines.append({"type": "ai-title", "aiTitle": title})
+        return self.write_session(session_id, lines)
 
     def two_sessions(self, **second):
         run = self.old_run(session_id=self.FIRST)
@@ -1117,6 +1139,74 @@ class ResumedRunTest(Workspace):
         card = self.card(run)
         self.assertAlmostEqual(card["totals"]["claude"]["cost_usd"], expected, places=3)
         self.assertEqual(card["totals"]["claude"]["agents"], 2)
+
+    # a resumed chat that starts as a copy of the old one
+
+    def copied_pair(self):
+        """The first session's records, replayed in the second session's file, then the second session's own messages."""
+        run = self.old_run(session_id=self.FIRST)
+        first = self.session(run, self.FIRST, "start", 600, title="First chat")
+        second = self.replayed(run, first, self.SECOND, offset=90_000, title="Resumed chat")
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        return run, first, second
+
+    def chiefs(self, run):
+        return [a for a in self.card(run)["agents"] if a["role"] == "chief"]
+
+    def test_a_replayed_message_is_counted_once_in_the_oldest_session(self):
+        run, _, _ = self.copied_pair()
+        first, second = self.chiefs(run)
+        self.assertEqual((first["session_id"], first["tokens"]["input"], first["cost_usd"]), (self.FIRST, 1_000_000, 4.0))
+        self.assertEqual((second["session_id"], second["tokens"]["input"]), (self.SECOND, 2_000_000))  # not 3,000,000
+        price = lambda usage: chief.price_claude("claude-opus-5-5", usage, PRICES)
+        self.assertAlmostEqual(second["cost_usd"], price(self.SECOND_USAGE), places=6)
+        card = self.card(run)
+        self.assertAlmostEqual(card["totals"]["claude"]["cost_usd"], 12.024, places=3)  # not 16.024
+        self.assertEqual(card["totals"]["claude"]["agents"], 2)
+        self.assertAlmostEqual(self.board()["spend"]["all_runs"], 12.024, places=3)
+        self.assertIn("Claude subtotal: $12.02 over 2 agent(s)",
+                      chief.summary_markdown(str(self.repo), str(run), config_dir=str(self.config), prices=PRICES))
+
+    def test_a_copied_session_starts_at_its_own_first_message(self):
+        run, _, _ = self.copied_pair()
+        first, second = self.chiefs(run)
+        self.assertEqual(first["started"], self.stamp(self.BEGAN + 600 - 30))
+        self.assertEqual(second["started"], self.stamp(self.BEGAN + 90_000 - 30))  # not the copied first message, which is the first row's
+        self.assertEqual([a["session_id"] for a in self.chiefs(run)], [self.FIRST, self.SECOND])  # so the rows sort oldest first
+        self.assertEqual(second["cache"], {"last_at": int(self.BEGAN) + 90_000, "ttl_s": 3600})
+        self.assertEqual((self.card(run)["session_id"], self.card(run)["chat_title"]), (self.SECOND, "Resumed chat"))
+
+    def test_a_copy_is_counted_in_the_newer_row_when_the_old_transcript_is_gone(self):
+        run, first, _ = self.copied_pair()
+        first.unlink()
+        rows = self.chiefs(run)
+        self.assertEqual([(a["id"], a["session_id"], a["tokens"]["input"]) for a in rows], [("chief", self.SECOND, 3_000_000)])
+        self.assertAlmostEqual(self.card(run)["totals"]["claude"]["cost_usd"], 12.024, places=3)  # still once, now all in one row
+        self.assertEqual(rows[0]["started"], self.stamp(self.BEGAN + 600 - 30))  # the copy's first message is the only one there is
+
+    def test_a_copied_session_with_no_message_of_its_own_costs_nothing(self):
+        run = self.old_run(session_id=self.FIRST)
+        first = self.session(run, self.FIRST, "start", 600)
+        self.replayed(run, first, self.SECOND, title="Resumed chat")
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        rows = self.chiefs(run)
+        self.assertEqual([(a["session_id"], a["tokens"]["input"]) for a in rows], [(self.FIRST, 1_000_000), (self.SECOND, 0)])
+        self.assertEqual(self.card(run)["totals"]["claude"]["cost_usd"], 4.0)
+        self.assertEqual((self.card(run)["session_id"], self.card(run)["chat_title"]), (self.SECOND, "Resumed chat"))
+        self.assertGreater(chief.parse_time(rows[1]["started"]), chief.parse_time(rows[0]["started"]))  # no message of its own: it starts when its file was last written, after the first
+
+    def test_parse_messages_skips_what_an_earlier_transcript_already_counted(self):
+        record = lambda kind, uuid, message_id=None, tokens=10: json.dumps({
+            "type": kind, "uuid": uuid, "timestamp": "2026-01-01T00:00:10Z",
+            "message": {"role": kind, "content": "hi", **({"id": message_id, "model": "claude-opus-5-5", "usage": {"input_tokens": tokens, "output_tokens": 0}} if message_id else {})}})
+        old = [record("user", "u1"), record("assistant", "a1", "m1", 5), record("assistant", "a2", "m1", 7)]  # a streamed message is written twice
+        seen = set()
+        first = chief.parse_messages(old, PRICES, seen=seen)
+        self.assertEqual((first["tokens"]["input"], first["started"]), (7, "2026-01-01T00:00:10Z"))  # a streamed copy still replaces the one before it
+        again = chief.parse_messages(old + [record("assistant", "a3", "m2", 3)], PRICES, seen=seen)
+        self.assertEqual(again["tokens"]["input"], 3)
+        self.assertEqual(chief.parse_messages(old, PRICES, seen=seen)["started"], None)  # nothing in it is its own
+        self.assertEqual(chief.parse_messages(old, PRICES)["tokens"]["input"], 7)  # without a seen-set nothing is skipped
 
     def test_the_summary_lists_a_priced_chief_row_per_session(self):
         run = self.two_sessions(usage={"input_tokens": 2_000_000, "output_tokens": 0})  # no cache tokens: a round $8.00
