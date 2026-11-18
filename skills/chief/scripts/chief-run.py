@@ -30,6 +30,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import signal
 import socketserver
 import subprocess
@@ -61,7 +62,7 @@ BUCKET_SECONDS = 600  # spend is kept in 10-minute buckets for the sparkline and
 VERDICT = re.compile(r"^\W*(?:status\W*)?(DONE_WITH_CONCERNS|DONE|BLOCKED|FAILED|NEEDS_CONTEXT|APPROVED|CHANGES(?:_REQUESTED)?)\b", re.I)
 DEFAULT_DAYS = 14
 DASHBOARD_APP = "chief-dashboard"
-DASHBOARD_VERSION = 4  # a running dashboard older than this is replaced by the next run
+DASHBOARD_VERSION = 5  # a running dashboard older than this is replaced by the next run
 DEFAULT_PORT = int(os.environ.get("CHIEF_DASHBOARD_PORT") or 8765)
 AUTO_IDLE_HOURS = 6  # a dashboard the chief started exits after this long with no page open
 PROVIDERS = ("claude", "chatgpt")
@@ -1067,6 +1068,63 @@ def find_run(runs, key):
     return by_id[0] if len(by_id) == 1 else None
 
 
+# ---- resuming the chief chat from the dashboard ---------------------------------------------
+
+OPEN_CHAT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,79}$")  # stricter than SESSION_ID: never starts with "-", so never reads as an option
+
+
+def launch_terminal(cwd, session_id, run=subprocess.run, folder=None):
+    """Open Terminal in `cwd` on `claude --resume <session_id>` through a one-use .command file that deletes
+    itself. `open -a Terminal` on a file needs no Automation permission; osascript would ask for one.
+    Returns the argv it ran; a failed launch removes the file and raises."""
+    fd, path = tempfile.mkstemp(prefix="chief-chat-", suffix=".command", dir=folder)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(f"#!/bin/sh\nrm -f -- {shlex.quote(path)}\n"
+                         f"cd -- {shlex.quote(cwd)} && exec claude --resume {shlex.quote(session_id)}\n")
+        os.chmod(path, 0o700)
+        argv = ["open", "-a", "Terminal", path]
+        run(argv, check=True, timeout=10)
+    except BaseException:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    return argv
+
+
+def open_chat(repo, key, config_dir=None, prices=None, launch=None):
+    """Resume a run's chief chat in Terminal. Returns (http status, json body). The client names only the run; the
+    folder and session id come from the run's own record, and a chat that is still being written is never forked."""
+    run = find_run(list_runs(repo), key)
+    if not run:
+        return 404, {"error": "run not found"}
+    card = build_cards([run], config_dir, prices)[0]
+    chief_row = next((agent for agent in card["agents"] if agent["id"] == "chief"), None)
+    session = card.get("session_id")
+    if not chief_row or not isinstance(session, str) or not OPEN_CHAT_ID.fullmatch(session):
+        return 404, {"error": "no chief chat is recorded for this run"}
+    cwd = card.get("cwd")
+    if not isinstance(cwd, str) or not (os.path.isabs(cwd) and os.path.isdir(cwd)):
+        return 404, {"error": "the chat's folder no longer exists"}
+    path = session_transcript(config_dir or default_config_dir(), session)
+    try:
+        mtime = os.path.getmtime(path) if path else 0
+    except OSError:
+        mtime = 0
+    # The file's mtime counts as well as the card's `active`: `active` can stop at the run's end or its last message.
+    if chief_row.get("status") == "running" or time.time() - max(chief_row.get("active") or 0, mtime) < STALE_SECONDS:
+        return 409, {"error": "live"}
+    if sys.platform != "darwin":
+        return 501, {"error": "Open chat needs macOS Terminal"}
+    try:
+        (launch or launch_terminal)(cwd, session)
+    except (OSError, subprocess.SubprocessError) as error:
+        return 500, {"error": f"Terminal did not open: {error}"}
+    return 200, {"opened": "Terminal"}
+
+
 def resolve_file(run, name):
     """A file the dashboard may show for this run, inside the run's own checkout, or None."""
     if not run:
@@ -1374,9 +1432,23 @@ def serve(repo, port, refresh_minutes=5, days=DEFAULT_DAYS, idle_hours=0):
             # Only the dashboard page sends this header; a page on another site cannot add it without a
             # CORS preflight, which this server never answers.
             url = urllib.parse.urlparse(self.path)
-            if url.path != "/archive" or self.headers.get("X-Chief-Dashboard") != "1":
+            port = self.server.server_port
+            origin = self.headers.get("Origin")
+            if (not host_allowed(self) or (origin is not None and origin not in (f"http://127.0.0.1:{port}", f"http://localhost:{port}"))
+                    or url.path not in ("/archive", "/open-chat") or self.headers.get("X-Chief-Dashboard") != "1"):
                 return self.send(403, "forbidden", "text/plain; charset=utf-8")
             last_request["at"] = time.time()
+            if url.path == "/open-chat":
+                if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+                    return self.send(415, json.dumps({"error": "send application/json"}), "application/json")
+                try:
+                    length = min(int(self.headers.get("Content-Length") or 0), 65536)
+                    body = json.loads(self.rfile.read(length) or b"{}")
+                    key = str(body.get("key") or "")  # the only field read: never a command, folder or session id
+                except (ValueError, AttributeError):
+                    return self.send(415, json.dumps({"error": "the body is not a JSON object"}), "application/json")
+                status, payload = open_chat(repo, key)
+                return self.send(status, json.dumps(payload), "application/json")
             try:
                 length = min(int(self.headers.get("Content-Length") or 0), 65536)
                 body = json.loads(self.rfile.read(length) or b"{}")
