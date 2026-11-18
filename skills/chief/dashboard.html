@@ -232,7 +232,8 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 16px 0 12px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { font: 500 12.5px/1 var(--f-mono); padding: 8px 12px; border: 1.5px solid var(--line); border-radius: 10px; color: var(--muted); background: var(--night-2); }
-.chip:hover { border-color: var(--gold); color: var(--cream); }
+.chip:not(:disabled):hover { border-color: var(--gold); color: var(--cream); }
+.chip:disabled { opacity: .5; cursor: default; }
 .chip[aria-pressed="true"] { border-color: var(--gold); color: var(--gold-lt); background: rgba(228,176,74,.1); }
 .chip.danger { border-color: rgba(224,83,61,.5); color: #F2A091; }
 .bar .spacer { flex: 1; }
@@ -355,6 +356,8 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
 .links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .links code { flex: 1 1 100%; font: 12px/1.5 var(--f-mono); background: #0E0805; border: 1.5px solid var(--line); border-radius: 10px; padding: 8px 10px; overflow-wrap: anywhere; user-select: all; }
 .links a.chip { text-decoration: none; }
+.links .note { flex: 1 1 100%; }
+.links .note.bad { color: var(--bad); }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } .ens .cur { display: none; } }
 @media (max-width: 1100px) {
@@ -1057,24 +1060,41 @@ const resumeCommand = (run, sessionId) => typeof sessionId === 'string' && SESSI
 const OPEN_CHAT_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,79}$/  // the ids POST /open-chat accepts (chief-run.py); a leading dash would read as a flag
 const CHAT_LIVE_S = 900  // chief-run.py STALE_SECONDS: a chat whose transcript changed within this is treated as open elsewhere
 let openingChat = null  // the run key whose open-chat request is in flight
+let chatNote = null  // { key, text, ok }: the last open-chat answer, drawn beside the button until the next attempt or the panel closes
 function openChatControl(r, chief, nowS = Date.now() / 1000) {
   if (!(chief && typeof chief.session_id === 'string' && OPEN_CHAT_ID.test(chief.session_id))) return ''
+  const note = chatNote && chatNote.key === r.key ? `<span class="mix note${chatNote.ok ? '' : ' bad'}">${esc(chatNote.text)}</span>` : ''
   if (chief.status === 'running' || nowS - (chief.active || 0) < CHAT_LIVE_S) {
-    return `<span class="mix" title="This chief chat was active in the last 15 minutes. Resuming it in Terminal too would fork it.">chat may be open elsewhere</span>`
+    return `<span class="mix" title="This chief chat was active in the last 15 minutes. Resuming it in Terminal too would fork it.">chat may be open elsewhere</span>${note}`
   }
-  return `<button class="chip" type="button" data-open-chat="${esc(r.key)}"${openingChat === r.key ? ' disabled' : ''} title="Resume this chief chat in Terminal">open chat</button>`
+  return `<button class="chip" type="button" data-open-chat="${esc(r.key)}"${openingChat === r.key ? ' disabled' : ''} title="Resume this chief chat in Terminal">open chat</button>${note}`
+}
+async function chatError(res) {  // the server's { error } when the body has one, else the body as sent
+  const body = await res.text().catch(() => '')
+  try { const e = JSON.parse(body).error; if (typeof e === 'string' && e) return e } catch {}
+  return body
 }
 async function openChat(button) {
   if (openingChat) return
-  openingChat = button.dataset.openChat
+  const key = button.dataset.openChat, focused = document.activeElement === button
+  openingChat = key; chatNote = null
   button.disabled = true
+  let text, ok = false
   try {
-    const res = await fetch('/open-chat', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Chief-Dashboard': '1' }, body: JSON.stringify({ key: button.dataset.openChat }) })
-    $('status').textContent = res.ok ? 'Opened the chief chat in Terminal.'
-      : res.status === 409 ? 'This chief chat was active in the last 15 minutes, so it may be open elsewhere; it was not opened again.'
-      : 'Open chat failed: ' + (await res.text())
-  } catch (e) { $('status').textContent = 'Open chat failed: ' + (e && e.message || e)  // the server stopped or the request never left
-  } finally { openingChat = null; button.disabled = false }
+    const res = await fetch('/open-chat', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Chief-Dashboard': '1' }, body: JSON.stringify({ key }) })
+    const err = res.ok ? '' : await chatError(res)
+    ok = res.ok
+    text = ok ? 'Opened the chief chat in Terminal.'
+      : res.status === 409 ? 'This chief chat was active in the last 15 minutes, so it may be open elsewhere; it was not opened again' + (err ? ` (${err}).` : '.')
+      : 'Open chat failed: ' + (err || res.status)
+  } catch (e) { text = 'Open chat failed: ' + (e && e.message || e)  // the server stopped or the request never left
+  }
+  openingChat = null; button.disabled = false
+  if (openKey !== key) return  // the panel closed meanwhile: there is nowhere to say it
+  chatNote = { key, text, ok }
+  renderScore({ force: true })  // the panel the click came from may have been redrawn (disabled) since: draw the button and the answer fresh
+  const next = focused && $('score').querySelector('[data-open-chat]')
+  if (next) next.focus({ preventScroll: true })
 }
 function sessionBadge(r) {
   if (!r.session_id) return ''
@@ -1287,7 +1307,7 @@ async function loadTranscript(key, agentId) {
   } catch { show('The dashboard server stopped. The next chief run starts it again.') }
 }
 function openScore(key) { if (openKey !== key) { openAgent = null; openFile = null; openTranscript = null } openKey = key; $('score').hidden = false; $('curtain').hidden = false; renderScore({ force: true }); if ($('close')) $('close').focus() }
-function closeScore() { openKey = null; $('score').hidden = true; $('curtain').hidden = true }
+function closeScore() { openKey = null; chatNote = null; $('score').hidden = true; $('curtain').hidden = true }
 
 /* ---------- archive ---------- */
 async function archive(keys, restore) {

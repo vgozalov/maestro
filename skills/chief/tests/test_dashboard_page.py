@@ -471,18 +471,81 @@ class OpenChatPageTest(unittest.TestCase):
         html = run_page(f"const b = {{ dataset: {{ openChat: 'r1@abc' }}, disabled: false }}; openChat(b); return openChatControl({json.dumps(sample_run(session_id='1a2b3c4d-aaaa'))}, {json.dumps(self.CHIEF)}, {self.NOW})")
         self.assertRegex(html, r'<button[^>]*data-open-chat="r1@abc"[^>]*disabled')
 
-    def test_a_409_says_the_chat_may_be_open_elsewhere_and_re_enables(self):
-        out = run_page("fetch = async () => ({ ok: false, status: 409, text: async () => '{\"error\":\"live\"}' }); const b = { dataset: { openChat: 'r1@abc' }, disabled: false }; await openChat(b); return [$('status').textContent, b.disabled, openingChat]")
-        self.assertIn("may be open elsewhere", out[0])
+    def open_panel(self):
+        """JS that opens the chief panel of run r1@abc (its open-chat button drawn) and defines the clicked button B."""
+        board = sample_board([sample_run(session_id="1a2b3c4d-aaaa", agents=[self.CHIEF])])
+        return (f"Date.now = () => {self.NOW * 1000}; active = {json.dumps(board)}; openKey = 'r1@abc'; openAgent = 'chief'; "
+                "renderScore({ force: true }); const b = { dataset: { openChat: 'r1@abc' }, disabled: false }; ")
+
+    @staticmethod
+    def links(panel):
+        """The chief panel's .links area: the command, the buttons and the open-chat note."""
+        return panel.split('class="s-side"')[1].split('class="links"')[1].split("</div>")[0]
+
+    @staticmethod
+    def reply(status, body):
+        return f"fetch = async () => ({{ ok: {str(status == 200).lower()}, status: {status}, text: async () => {json.dumps(body)} }}); "
+
+    def test_a_409_shows_the_servers_error_in_the_panel_and_a_redraw_keeps_it(self):
+        out = run_page(self.open_panel() + self.reply(409, '{"error":"live <i>"}')
+                       + "await openChat(b); const after = $('score').innerHTML; renderScore({ force: true }); return [after, $('score').innerHTML, $('status').textContent, b.disabled, openingChat]")
+        for panel in out[:2]:
+            links = self.links(panel)
+            self.assertIn("may be open elsewhere", links)
+            self.assertIn("live &lt;i&gt;", links)     # the server's error, escaped
+            self.assertNotIn("<i>", links)
+        self.assertEqual(out[2], "")                    # nothing under the toolbar, which the modal covers
+        self.assertFalse(out[3])
+        self.assertIsNone(out[4])
+
+    def test_every_failure_shows_the_servers_error_beside_the_button(self):
+        for status, body, shown in ((404, '{"error":"run not found"}', "Open chat failed: run not found"),
+                                    (500, '{"error":"Terminal did not open: boom"}', "Open chat failed: Terminal did not open: boom"),
+                                    (501, '{"error":"Open chat needs macOS Terminal"}', "Open chat failed: Open chat needs macOS Terminal"),
+                                    (415, "plain words", "Open chat failed: plain words")):
+            with self.subTest(status=status):
+                links = self.links(run_page(self.open_panel() + self.reply(status, body) + "await openChat(b); renderScore({ force: true }); return $('score').innerHTML"))
+                self.assertIn(shown, links)
+                self.assertIn('data-open-chat="r1@abc"', links)
+
+    def test_a_stopped_server_and_a_success_are_shown_in_the_panel(self):
+        out = run_page(self.open_panel() + "fetch = async () => { throw new TypeError('Failed to fetch') }; await openChat(b); const down = $('score').innerHTML; "
+                       + self.reply(200, "{}") + "await openChat(b); return [down, $('score').innerHTML, $('status').textContent, openingChat]")
+        self.assertIn("Open chat failed: Failed to fetch", self.links(out[0]))
+        self.assertIn("Opened the chief chat in Terminal.", self.links(out[1]))
+        self.assertNotIn("Failed to fetch", out[1])    # the new attempt replaced the old note
+        self.assertEqual(out[2], "")
+        self.assertIsNone(out[3])
+
+    def test_a_new_attempt_or_closing_the_panel_clears_the_note(self):
+        out = run_page(self.open_panel() + self.reply(500, '{"error":"boom"}') + "await openChat(b); "
+                       "fetch = () => new Promise(() => {}); openChat(b); renderScore({ force: true }); const retrying = $('score').innerHTML; "
+                       "openingChat = null; closeScore(); openScore('r1@abc'); return [retrying, $('score').innerHTML]")
+        self.assertNotIn("boom", out[0])
+        self.assertNotIn("boom", out[1])
+        self.assertIn('data-open-chat="r1@abc"', out[1])
+
+    def test_the_visible_button_is_enabled_once_the_request_settles_after_a_redraw(self):
+        out = run_page(self.open_panel() + "let release; fetch = () => new Promise((r) => { release = r }); const done = openChat(b); "
+                       "renderScore({ force: true }); const during = $('score').innerHTML; "
+                       "release({ ok: true, status: 200, text: async () => '{}' }); await done; return [during, $('score').innerHTML]")
+        self.assertRegex(self.links(out[0]), r'<button[^>]*data-open-chat="r1@abc"[^>]*disabled')
+        self.assertNotRegex(self.links(out[1]), r'<button[^>]*data-open-chat="r1@abc"[^>]*disabled')
+        self.assertIn("Opened the chief chat in Terminal.", self.links(out[1]))
+
+    def test_an_answer_after_the_panel_closed_is_dropped(self):
+        out = run_page(self.open_panel() + "let release; fetch = () => new Promise((r) => { release = r }); const done = openChat(b); closeScore(); "
+                       "release({ ok: false, status: 500, text: async () => '{\"error\":\"late\"}' }); await done; openScore('r1@abc'); return [$('score').innerHTML, b.disabled, openingChat]")
+        self.assertNotIn("late", out[0])
         self.assertFalse(out[1])
         self.assertIsNone(out[2])
 
-    def test_a_server_error_or_a_stopped_server_is_shown_and_re_enables(self):
-        out = run_page("fetch = async () => ({ ok: false, status: 500, text: async () => '{\"error\":\"OSError: boom\"}' }); const b = { dataset: { openChat: 'r1@abc' }, disabled: false }; await openChat(b); const first = $('status').textContent; fetch = async () => { throw new TypeError('Failed to fetch') }; await openChat(b); return [first, $('status').textContent, b.disabled, openingChat]")
-        self.assertEqual(out[0], 'Open chat failed: {"error":"OSError: boom"}')
-        self.assertEqual(out[1], "Open chat failed: Failed to fetch")
-        self.assertFalse(out[2])
-        self.assertIsNone(out[3])
+    def test_a_disabled_chip_looks_inactive_and_does_not_light_up_on_hover(self):
+        css = page_css()
+        self.assertRegex(css, r"\.chip:disabled\s*\{[^}]*opacity:[^}]*cursor:\s*default")
+        self.assertRegex(css, r"\.chip:not\(:disabled\):hover\s*\{[^}]*border-color:\s*var\(--gold\)")
+        self.assertNotRegex(css, r"\.chip:hover\s*\{")
+        self.assertRegex(css, r"\.links \.note\s*\{[^}]*flex:\s*1 1 100%")
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
