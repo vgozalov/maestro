@@ -37,6 +37,29 @@ test_versions_match_the_changelog() {
   assert_eq "$changelog" "$claude" "newest CHANGELOG version vs plugin version"
 }
 
+# A top-level doc states the current version where it pins one: `maestro#v1.2.2`, a raw URL
+# `maestro/v1.2.2/...`, a plugin cache path `maestro/1.2.2/...`, `maestro@1.2.2`, or the
+# "Release: `v1.2.2`" line. Each of those must equal the plugin version. Bare mentions such as
+# "since 1.1.0" and the CHANGELOG are history and are not read; `skills@1.7.2` is the CLI's version.
+test_docs_state_the_current_version() {
+  local want file hit found=0 stale=""
+  command -v python3 >/dev/null || return 0
+  want=$(json_get "$REPO_ROOT/.claude-plugin/plugin.json" 'd["version"]')
+  for file in "$REPO_ROOT"/*.md; do
+    case $file in */CHANGELOG.md) continue ;; esac
+    while IFS= read -r hit; do
+      [ -n "$hit" ] || continue
+      found=$((found + 1))
+      [ "${hit##*[!0-9.]}" = "$want" ] || stale="$stale
+  $(basename "$file"):$hit"
+    done <<EOF
+$(grep -noE '(maestro[/#@]|Release: `)v?[0-9]+\.[0-9]+\.[0-9]+' "$file" || true)
+EOF
+  done
+  [ "$found" -gt 0 ] || fail "no versioned references found in the docs; this check reads nothing"
+  [ -z "$stale" ] || fail "docs pin a version other than the plugin's $want:$stale"
+}
+
 test_manifest_paths_exist() {
   local path
   command -v python3 >/dev/null || return 0

@@ -12,7 +12,7 @@ What gets installed:
 | `executing-plans`, `requesting-code-review`, `using-git-worktrees`, `finishing-a-development-branch`, `test-driven-development`, `systematic-debugging`, `verification-before-completion` | The skills the build hands off to: inline execution, the final code review, worktree setup, finishing the branch, and the test-first, root-cause and verify-before-claiming disciplines. |
 | `wrap-up`, `create-sprint` | Session wrap-up, and a verification sprint from a plan. |
 
-Release: `v1.1.0`. Use the tag in every command below so the skills, the agent and the scripts match.
+Release: `v1.2.2`. Use the tag in every command below so the skills, the agent and the scripts match.
 
 ## 1. Ask the user, once
 
@@ -37,16 +37,16 @@ Python must be 3.8 or newer. Missing `git`, `python3`, `npx` or `claude`: stop a
 Project scope, from the repo root:
 
 ```bash
-npx -y skills@1.7.2 add vgozalov/maestro#v1.1.0 -a claude-code -a codex -y
+npx -y skills@1.7.2 add vgozalov/maestro#v1.2.2 -a claude-code -a codex -y
 ```
 
 Every project:
 
 ```bash
-npx -y skills@1.7.2 add vgozalov/maestro#v1.1.0 -g -a claude-code -a codex -y
+npx -y skills@1.7.2 add vgozalov/maestro#v1.2.2 -g -a claude-code -a codex -y
 ```
 
-If the project lists its skills in `.agents/skills.txt`, add the line `vgozalov/maestro#v1.1.0 *` there instead and run `curl -fsSL https://raw.githubusercontent.com/vgozalov/maestro/v1.1.0/install.sh | bash` (add `-s -- --global` for every project).
+If the project lists its skills in `.agents/skills.txt`, add the line `vgozalov/maestro#v1.2.2 *` there instead and run `curl -fsSL https://raw.githubusercontent.com/vgozalov/maestro/v1.2.2/install.sh | bash` (add `-s -- --global` for every project).
 
 Check: `.claude/skills/chief/SKILL.md` exists (globally: `~/.claude/skills/chief/SKILL.md`). Call that skills folder `<skills>` below.
 
@@ -54,7 +54,7 @@ If another plugin already installs skills named `executing-plans`, `requesting-c
 
 **Upgrading from before 1.0.0:** `conduct` became `chief`, `parallel-agent-development` became `parallel-build`, and the `conductor` agent became `chief`. Remove the old skill folders or symlinks named `conduct` and `parallel-agent-development` from `.claude/skills/` and `.agents/skills/` (or the global ones), and the old `conductor.md` agent, after showing the user what you will delete.
 
-In addition, if the user wants Codex to have the whole plugin and its upgrades (the `npx` route copies only the skills folders), install the Codex plugin. It tracks the latest release, not `v1.1.0`:
+In addition, if the user wants Codex to have the whole plugin and its upgrades (the `npx` route copies only the skills folders), install the Codex plugin. It tracks the latest release, not the pinned tag:
 
 ```bash
 codex plugin marketplace add vgozalov/maestro
@@ -68,7 +68,7 @@ codex plugin marketplace upgrade maestro     # later, to update
 The skills CLI installs skills, not agents, so fetch the agent file:
 
 ```bash
-mkdir -p .claude/agents && curl -fsSL https://raw.githubusercontent.com/vgozalov/maestro/v1.1.0/agents/chief.md -o .claude/agents/chief.md
+mkdir -p .claude/agents && curl -fsSL https://raw.githubusercontent.com/vgozalov/maestro/v1.2.2/agents/chief.md -o .claude/agents/chief.md
 # every project instead: mkdir -p ~/.claude/agents && curl ... -o ~/.claude/agents/chief.md
 ```
 
