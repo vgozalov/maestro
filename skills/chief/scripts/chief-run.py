@@ -197,12 +197,13 @@ def start_run(repo, text, title=None, source="chat", now=None, session_id=None):
     with open(os.path.join(run_dir, "task.md"), "w", encoding="utf-8") as handle:
         handle.write(f"# {title}\n\nSource: {source}\n\n{text.strip()}\n")
     started = now_iso()
-    write_json(os.path.join(run_dir, "run.json"), {
+    state = {
         "id": run_id, "title": title, "source": source, "repo": repo, "started": started, "ended": None,
-        "phase": "intake", "plan": None, "workspace": None,
-        "session_id": plain_session_id(session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")),
+        "phase": "intake", "plan": None, "workspace": None, "session_id": None, "sessions": [],
         "phases": [{"phase": "intake", "at": started, "usage": usage_snapshot()}],
-    })
+    }
+    note_session(state, plain_session_id(session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")))
+    write_json(os.path.join(run_dir, "run.json"), state)
     try:
         register_run(run_dir, repo)
     except OSError as error:  # the run still works; only the shared dashboard misses it
@@ -242,14 +243,14 @@ def load_run(run_dir):
     return state
 
 
-def set_phase(run_dir, phase, plan=None, workspace=None, config_dir=None, prices=None):
+def set_phase(run_dir, phase, plan=None, workspace=None, config_dir=None, prices=None, session_id=None):
     if phase not in PHASES:
         raise ValueError(f"unknown phase {phase!r}; one of: {', '.join(PHASES)}")
     state = load_run(run_dir)
     at = now_iso()
     state["phase"] = phase
-    if not state.get("session_id"):  # a run from before the id was recorded learns it at its next phase
-        state["session_id"] = plain_session_id(os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    # the session running this phase drives the run now: a run from before the id was recorded, or one resumed in a new session, learns it here
+    note_session(state, plain_session_id(session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")))
     state["phases"].append({"phase": phase, "at": at, "usage": usage_snapshot()})
     if plan:
         state["plan"] = plan
@@ -258,8 +259,11 @@ def set_phase(run_dir, phase, plan=None, workspace=None, config_dir=None, prices
     state["ended"] = at if phase == "done" else None
     write_json(os.path.join(run_dir, "run.json"), state)
     run = read_run(run_dir, None)
-    if phase in ("done", "paused") and run and (read_json(pointer_path(run["repo"], run["id"])) or {}).get("archived"):
-        set_archived(run, True, build_cards([run], config_dir, prices)[0]["totals"])  # the totals taken at archive time are stale
+    if run and (read_json(pointer_path(run["repo"], run["id"])) or {}).get("archived"):
+        if phase in ("done", "paused"):
+            set_archived(run, True, build_cards([run], config_dir, prices)[0]["totals"])  # the totals taken at archive time are stale
+        else:
+            set_archived(run, False)  # a run that goes back to work returns to the board, without its stale totals
     return state
 
 
@@ -328,11 +332,28 @@ def price_codex(model, usage, prices):
 _TRANSCRIPTS = {}
 _SESSIONS = {}
 SESSION_ID = re.compile(r"^[A-Za-z0-9-]{1,80}$")
+SESSION_MARKERS = ("chief-run.py start", "chief-run.py phase")  # a main session is the chief's when it ran either; a resumed one only runs phase
 
 
 def plain_session_id(value):
     """The id when it is a plain session id, else None."""
     return value if isinstance(value, str) and SESSION_ID.fullmatch(value) else None
+
+
+def run_sessions(run):
+    """The chief sessions that drove a run, oldest first and the current one last. A run.json from before the
+    list holds only `session_id`; a tampered or foreign entry is dropped."""
+    listed = run.get("sessions")
+    ids = list(dict.fromkeys(sid for sid in (listed if isinstance(listed, list) else []) if plain_session_id(sid)))
+    current = plain_session_id(run.get("session_id"))
+    return [sid for sid in ids if sid != current] + [current] if current else ids
+
+
+def note_session(state, session_id):
+    """Make `session_id` the run's current chief session, keeping the ones before it. No id changes nothing."""
+    if session_id:
+        state["sessions"] = [sid for sid in run_sessions(state) if sid != session_id] + [session_id]
+        state["session_id"] = session_id
 
 
 def prompt_text(entry):
@@ -520,21 +541,19 @@ def claude_agents(config_dir, runs, prices):
                     "agent_id": os.path.basename(path)[len("agent-"): -len(".jsonl")], "_transcript": path})
                 break
     for run in runs:
-        chief = chief_session(config_dir, run, prices, since)
-        if chief:
-            found[run["id"]].append(chief)
+        found[run["id"]].extend(chief_sessions(config_dir, run, prices, since))
     return found
 
 
 def session_text(path):
-    """A main session's transcript, or None when it never started a run; remembered until the file changes."""
+    """A main session's transcript, or None when it never started or moved a run; remembered until the file changes."""
     stat = os.stat(path)
     cached = _SESSIONS.get(path)
     if cached and cached[:2] == (stat.st_mtime, stat.st_size):
         return cached[2]
     with open(path, encoding="utf-8", errors="replace") as handle:
         text = handle.read()
-    text = text if "chief-run.py start" in text else None  # never keep a transcript that is not ours
+    text = text if any(marker in text for marker in SESSION_MARKERS) else None  # never keep a transcript that is not ours
     _SESSIONS[path] = (stat.st_mtime, stat.st_size, text)
     return text
 
@@ -583,19 +602,37 @@ def session_cwd(text):
     return None
 
 
-def chief_session(config_dir, run, prices, since):
-    """The chief session.s own tokens: the main session that started this run, inside the run's time."""
-    start = parse_time(run["started"])
-    end = parse_time(run.get("ended"))
-    found = None
-    recorded = session_transcript(config_dir, run.get("session_id"))
-    if recorded:
+def read_chief_session(run, prices, path, text, sure, started):
+    """One chief session's own tokens, inside the run's time; None when its transcript cannot be stamped."""
+    parsed = parse_messages(text.splitlines(), prices, start=parse_time(run["started"]) - 120, end=parse_time(run.get("ended")), sidechain=False)
+    try:
+        active = parse_time(parsed["last_at"]) or os.path.getmtime(path)
+    except OSError:
+        return None
+    status = "done" if run.get("ended") else ("running" if time.time() - active < STALE_SECONDS else "stopped")
+    return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
+            "description": "the chief session", "status": status,
+            "started": started or parsed["started"] or run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
+            "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
+            "active": active, "context": parsed["context"], "_spend": parsed["spend"],
+            "cache": None if run.get("ended") else parsed["cache"],
+            "session_id": os.path.basename(path)[: -len(".jsonl")], "chat_title": chat_title(text),
+            "cwd": session_cwd(text), "_transcript": path if sure else None}
+
+
+def chief_sessions(config_dir, run, prices, since):
+    """The chief rows of a run, oldest session first: one per recorded session whose transcript is found. The
+    current session's row is "chief"; an earlier one is "chief-<session id>". A run with no recorded session
+    transcript falls back to the first main session that names it."""
+    found = []
+    for session_id in run_sessions(run):
+        path = session_transcript(config_dir, session_id)
         try:
-            text = session_text(recorded)
+            text = session_text(path) if path else None
         except OSError:
             text = None
         if text and run["id"] in text:
-            found = (recorded, text, True)
+            found.append((path, text, True))
     if not found:
         for path in glob.glob(os.path.join(config_dir, "projects", "*", "*.jsonl")):
             try:
@@ -605,25 +642,13 @@ def chief_session(config_dir, run, prices, since):
             except OSError:
                 continue
             if text and run["id"] in text:
-                found = (path, text, run["dir"] in text)  # an id alone is a loose match
+                found.append((path, text, run["dir"] in text))  # an id alone is a loose match
                 break
-    if not found:
-        return None
-    path, text, sure = found
-    parsed = parse_messages(text.splitlines(), prices, start=start - 120, end=end, sidechain=False)
-    try:
-        active = parse_time(parsed["last_at"]) or os.path.getmtime(path)
-    except OSError:
-        return None
-    status = "done" if run.get("ended") else ("running" if time.time() - active < STALE_SECONDS else "stopped")
-    return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
-            "description": "the chief session", "status": status,
-            "started": run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
-            "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
-            "active": active, "context": parsed["context"], "_spend": parsed["spend"],
-            "cache": None if run.get("ended") else parsed["cache"],
-            "session_id": os.path.basename(path)[: -len(".jsonl")], "chat_title": chat_title(text),
-            "cwd": session_cwd(text), "_transcript": path if sure else None}
+    rows = [row for row in (read_chief_session(run, prices, *item, started=run["started"] if index == 0 else None)
+                            for index, item in enumerate(found)) if row]
+    for row in rows[:-1]:
+        row.update(id="chief-" + row["session_id"], description="an earlier chief session")
+    return rows
 
 
 # ---- Codex agents, from run-codex-job.py's records ----------------------------------------
@@ -948,7 +973,7 @@ def build_cards(runs, config_dir=None, prices=None):
         card = {key: run.get(key) for key in ("key", "id", "title", "source", "phase", "phases", "started", "ended",
                                               "plan", "workspace", "dir", "repo", "archived")}
         chief_row = next((agent for agent in agents if agent["id"] == "chief"), None) or {}
-        card.update(session_id=chief_row.get("session_id") or plain_session_id(run.get("session_id")),
+        card.update(session_id=chief_row.get("session_id") or (run_sessions(run) or [None])[-1],
                     chat_title=chief_row.get("chat_title"), cwd=chief_row.get("cwd") or run.get("repo"),
                     cache=chief_row.get("cache"))
         last = max([parse_time(entry.get("at")) or 0 for entry in run.get("phases") or []]
@@ -1040,15 +1065,17 @@ def summary_markdown(repo, run_dir, config_dir=None, prices=None):
         agent.pop("_spend", None)
     lines = [f"Run {card['id']}: {card['title']}", "",
              "| provider | model | role | task | status | tokens | API-eq $ |", "| --- | --- | --- | --- | --- | --- | --- |"]
+    sessions = sum(1 for agent in card["agents"] if agent["role"] == "chief")
     for agent in card["agents"]:
         tokens = agent["tokens"]
+        task = f"session {agent['session_id'][:8]}" if sessions > 1 and agent["role"] == "chief" else agent["task"]  # a run resumed in a new session has a chief row per session
         if agent["provider"] == "chatgpt":
             detail = f"in {tokens['input']:,} (cached {tokens['cached']:,}) / out {tokens['output']:,} (reasoning {tokens['reasoning']:,})"
         else:
             detail = (f"in {tokens['input']:,} / cache w {tokens['cache_write_5m'] + tokens['cache_write_1h']:,}"
                       f" r {tokens['cache_read']:,} / out {tokens['output']:,}")
         cost = "in the resume below" if agent.get("superseded") else money(agent["cost_usd"])
-        lines.append(f"| {agent['provider']} | {agent['model'] or '?'} | {agent['role']} | {agent['task']} | {agent['status']} | {detail} | {cost} |")
+        lines.append(f"| {agent['provider']} | {agent['model'] or '?'} | {agent['role']} | {task} | {agent['status']} | {detail} | {cost} |")
     totals = card["totals"]
     for name, label in (("claude", "Claude"), ("chatgpt", "ChatGPT")):
         bucket = totals[name]
