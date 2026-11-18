@@ -282,21 +282,48 @@ class HeaderTest(unittest.TestCase):
             self.assertRegex(body, r"min-width:\s*0")
         self.assertRegex(self.rule(css, ".ledger > div"), r"min-width:\s*0")
 
-    def test_gauges_alone_on_a_row_grow_their_dial(self):
+    def test_gauges_alone_on_a_row_grow_their_dial_and_ease_back_to_the_desktop_size(self):
         # 900, not 880: the 1.5px stage border snaps to 1px at 1x density, which moved the 880 edge by a pixel
         css = self.media("max-width: 900px")
         self.assertRegex(self.rule(css, ".meter"), r"gap:\s*14px")
-        self.assertRegex(self.rule(css, ".meter svg"), r"flex-basis:\s*124px[^}]*width:\s*124px")
         self.assertNotIn("880px", page_css())
+        # The dial is 124px while the gauges are alone on a row and 104px from 901px up. A 20px step at the edge was the second
+        # visible jump (410px was the first), so the 900px block eases the basis: 124px at 860px and under, 104px at 900px.
+        m = re.search(r"flex-basis:\s*clamp\((\d+)px,\s*calc\((\d+)px \+ \((\d+)px - 100vw\) / (\d+)\),\s*(\d+)px\)", self.rule(css, ".meter svg"))
+        self.assertTrue(m, "the 900px block must ease the dial's flex-basis with clamp(min, calc(min + (900px - 100vw) / n), max)")
+        low, start, edge, slope, high = (int(n) for n in m.groups())
+        desktop = int(re.search(r"width:\s*(\d+)px", self.rule(page_css(), ".meter svg")).group(1))
+        self.assertEqual((low, start, edge, high), (desktop, desktop, 900, 124))   # ends at the desktop dial, exactly at the block's edge
+        dial = lambda w: desktop if w > edge else min(high, max(low, start + (edge - w) / slope))
+        steps = [abs(dial(w + 5) - dial(w)) for w in range(520, 1000, 5)]
+        self.assertLessEqual(max(steps), 8)                                           # no visible jump from 520px to the desktop
 
     def test_on_narrow_phones_the_dial_sits_above_its_readings_in_each_half(self):
-        # Side by side the dial would fall under ~56px just below 410px; stacked it takes the card's width, capped at 124px.
-        css = self.media("max-width: 410px")
+        # Side by side the dial shrinks under 104px below ~500px (to 71px at 415px), and stacked it used to jump to 124px at 410px.
+        # Stacking from 500px, at the dial's own 104px, makes the dial 102-104px everywhere from 320px to the side-by-side layout.
+        css = self.media("max-width: 500px")
         self.assertRegex(self.rule(css, ".meter"), r"flex-direction:\s*column")
         dial = self.rule(css, ".meter svg")
-        for want in (r"flex:\s*none", r"width:\s*100%", r"max-width:\s*124px"):
+        for want in (r"flex:\s*none", r"width:\s*100%", r"max-width:\s*104px"):
             self.assertRegex(dial, want)
+        side_by_side = self.rule(self.media("max-width: 520px"), ".meter svg")
+        self.assertRegex(side_by_side, r"flex-basis:\s*104px")                       # the size it stacks at is the size it has beside the readings
+        self.assertNotIn("410px", page_css())                                          # no second switch left behind at 410px
         self.assertNotRegex(css, r"grid-template-columns")   # still two gauges across: 50 / 50 holds down to 320px
+
+    def test_the_account_title_does_not_size_the_column_beside_a_dial(self):
+        # "Claude · blocked" is 115px of mono at 12px. Capped at 96px it still widened the readings' column by 24px, and the dial
+        # (104px beside it) lost that: 104px at 500px of page, 91px at 501px, and 100px at 520px, 89px at 521px. The title now
+        # fills the column the readings make, as the ledger's sparkline fills its cell, and wraps at the dot: whatever it says,
+        # the dial is the size it has for "Claude" alone. (The "run the usage check" hint keeps its own 96px wrap.)
+        css = page_css()
+        who = self.rule(css, ".meter .who")
+        self.assertRegex(who, r"width:\s*0\s*;")
+        self.assertRegex(who, r"min-width:\s*100%")
+        self.assertNotRegex(who, r"max-width|white-space:\s*nowrap")
+        self.assertRegex(self.rule(css, ".rd.na"), r"max-width:\s*96px")
+        html = run_page("return meter('Claude', { '5h': 11, week: 29, blocked: true }, '#D4703C')")
+        self.assertIn(">Claude · blocked</span>", html)
 
     def test_phone_sizes_from_520px(self):
         css = self.media("max-width: 520px")
@@ -309,13 +336,17 @@ class HeaderTest(unittest.TestCase):
     def test_the_ledger_scales_with_the_page_width_below_520px(self):
         # At 320px each third is about 83px wide, and the faces differ a lot: "$12,345.67" is 3.4em wide in the bundled Instrument
         # Serif but 5.0em in the Iowan Old Style a Mac falls back to when the file does not load. So below 520px the figures and the
-        # cell padding follow the page width (no fixed step to guess a face for): 15px figures and 4px padding at 320px, reaching the
-        # 22px and 10px of the 520px block by 470px and 480px. Three across stays; a caption that cannot fit wraps at its hyphen.
+        # cell padding follow the page width (no fixed step to guess a face for): 15px figures and 3.4px padding at 320px, reaching the
+        # 22px and 10px of the 520px block together, by 468px. Three across stays; a caption that cannot fit wraps at its hyphen.
+        # The burn rate's "/ h" never wraps under its figure: the figure line is nowrap, and at 320px in the Iowan Old Style fallback
+        # "$123.45" plus "/ h" fills the 76px of content, so the unit's margin is 2px (it was 3px) and the side padding 3.4px (it was 4px).
         css = page_css()
         phone = self.media("max-width: 520px")
+        self.assertRegex(self.rule(css, ".ledger .v"), r"white-space:\s*nowrap")
         self.assertRegex(self.rule(phone, ".ledger .v"), r"font-size:\s*clamp\(15px,\s*4\.7vw,\s*22px\)")
-        self.assertRegex(self.rule(phone, ".ledger > div"), r"padding:\s*8px clamp\(4px,\s*calc\(3\.75vw - 8px\),\s*10px\)")
-        self.assertRegex(self.rule(phone, ".ledger .v small"), r"font-size:\s*clamp\(10px,\s*3vw,\s*11px\)")   # the "/ h" unit
+        self.assertRegex(self.rule(phone, ".ledger > div"), r"padding:\s*8px clamp\(3px,\s*calc\(4\.5vw - 11px\),\s*10px\)")
+        self.assertRegex(self.rule(phone, ".ledger .v small"), r"font-size:\s*clamp\(10px,\s*3vw,\s*11px\)[^}]*margin-left:\s*2px")   # the "/ h" unit
+        self.assertIn('<small>/ h</small>', run_page("active = %s; renderStage(); return $('ledger').innerHTML" % json.dumps(sample_board([sample_run()]))))
         self.assertRegex(self.rule(phone, ".ledger .label, .ledger .mix"), r"font-size:\s*10px")   # captions are at their floor already
         self.assertRegex(self.rule(css, ".ledger > div"), r"min-width:\s*0")
         self.assertNotIn("@media (max-width: 380px)", css)                    # one fluid rule, not another step
@@ -376,6 +407,28 @@ class HeaderTest(unittest.TestCase):
         self.assertIn("<b>40%</b>", half)
         self.assertIn("run the usage check", half)
         self.assertEqual(half.count('stroke-linecap="round"'), 1)
+        self.assertIn('aria-label="Claude: 40% of the 5-hour window; line at 60%"', half)   # a half reading is not "no reading" either
+
+    def test_an_account_with_only_a_week_reading_is_not_labelled_no_reading(self):
+        # The week needle is drawn and the week reading shows, so the dial's label must say so; "no reading" is for both missing.
+        for reading in ("{ '5h': null, week: 29 }", "{ week: 29 }", "{ '5h': undefined, week: 29 }"):
+            html = run_page(f"return meter('Claude', {reading}, '#D4703C')")
+            self.assertIn('aria-label="Claude: 29% of the week; line at 60%"', html)
+            self.assertNotIn("no reading", html)
+            self.assertIn("<b>—</b><small>5 h</small>", html)       # the 5-hour reading is a dash
+            self.assertIn('<b>29%</b><small>week</small>', html)
+            self.assertNotIn("run the usage check", html)           # nothing is unreadable: the week has its reading
+            self.assertEqual(html.count('stroke-linecap="round"'), 1)   # the week needle only
+            self.assertIn('stroke-opacity=".5"', html)
+            for junk in ("NaN", "null", "undefined"):
+                self.assertNotIn(junk, html)
+        # the other states keep their texts: nothing readable is still "no reading", and a blocked account still says so
+        self.assertIn('aria-label="Claude: blocked, no reading"', run_page("return meter('Claude', { '5h': null, week: null, blocked: true }, '#D4703C')"))
+        self.assertIn('aria-label="no reading"', run_page("return meter('Claude', { '5h': null, week: null }, '#D4703C')"))   # not blocked: as before
+        blocked = run_page("return meter('Claude', { '5h': 11, week: 29, blocked: true }, '#D4703C')")
+        self.assertIn('aria-label="Claude: 11% of the 5-hour window, 29% of the week, blocked; line at 60%"', blocked)
+        self.assertIn("Claude · blocked", blocked)
+        self.assertIn('aria-label="Claude: 29% of the week, blocked; line at 60%"', run_page("return meter('Claude', { '5h': null, week: 29, blocked: true }, '#D4703C')"))
 
     def test_no_line_between_the_header_and_the_stages(self):
         hall = re.search(r"\.hall\s*\{([^}]*)\}", page_css()).group(1)
@@ -645,6 +698,17 @@ class OpenChatPageTest(unittest.TestCase):
         self.assertIn("copy resume command", side)
         self.assertNotIn("vscode://", html)
         self.assertNotIn("data-open-chat", html.split('class="s-side"')[0])   # not in the header
+
+    def test_only_the_current_chief_session_gets_the_open_chat_button(self):
+        earlier = {**self.CHIEF, "id": "chief-abc123", "session_id": "abc123"}
+        board = sample_board([sample_run(session_id="1a2b3c4d-aaaa", agents=[self.CHIEF, earlier])])
+        for agent_id, button in (("chief", True), ("chief-abc123", False)):
+            html = run_page(f"Date.now = () => {self.NOW * 1000}; active = {json.dumps(board)}; openKey = 'r1@abc'; openAgent = {json.dumps(agent_id)}; renderScore({{ force: true }}); return $('score').innerHTML")
+            side = html.split('class="s-side"')[1]
+            self.assertEqual('data-open-chat="r1@abc"' in side, button, agent_id)
+            self.assertEqual("chat may be open elsewhere" in side, False, agent_id)
+            self.assertIn("copy resume command", side)
+        self.assertIn("claude --resume abc123", side)
 
     def test_it_posts_only_the_key_and_disables_the_button_meanwhile(self):
         out = run_page("const b = { dataset: { openChat: 'r1@abc' }, disabled: false, textContent: 'open chat' }; openChat(b); return [__fetches.filter(([u]) => u === '/open-chat'), b.disabled]")
@@ -1248,6 +1312,33 @@ class StageTest(unittest.TestCase):
         gen = (PAGE.parents[2] / "assets" / "generate.py").read_text()
         self.assertIn("podiumWood", gen)
         self.assertIn("r-chief-legs", gen)
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class ArchiveButtonTest(unittest.TestCase):
+    WORKER = {"id": "claude-w1", "kind": "implement", "role": "implement", "task": "2", "provider": "claude",
+              "model": "claude-sonnet-5-5", "status": "running", "acts": []}
+
+    def score(self, **run):
+        board = sample_board([sample_run(**run)])
+        return run_page(f"active = {json.dumps(board)}; openKey = 'r1@abc'; renderScore({{ force: true }}); return $('score').innerHTML")
+
+    def test_every_unarchived_run_can_be_archived(self):
+        for phase in ("intake", "research", "plan", "implement", "review", "paused", "done"):
+            with self.subTest(phase=phase):
+                html = self.score(phase=phase, quiet=False)
+                self.assertRegex(html, r'data-archive="archive">archive</button>')
+                self.assertNotIn('data-archive="restore"', html)
+
+    def test_the_label_counts_working_agents(self):
+        done = {**self.WORKER, "id": "claude-w2", "status": "done"}
+        html = self.score(phase="implement", agents=[self.WORKER, {**self.WORKER, "id": "claude-w3"}, done])
+        self.assertIn('data-archive="archive">archive (2 working)</button>', html)
+
+    def test_an_archived_run_offers_restore_only(self):
+        html = self.score(phase="implement", archived="2026-11-17T00:00:00Z")
+        self.assertIn('data-archive="restore"', html)
+        self.assertNotIn('data-archive="archive"', html)
 
 
 if __name__ == "__main__":

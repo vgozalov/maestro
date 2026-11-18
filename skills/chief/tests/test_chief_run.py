@@ -75,15 +75,17 @@ class Workspace(unittest.TestCase):
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
         return path
 
-    def transcript(self, name, prompt, messages, done=True, model_alias="sonnet"):
-        lines = [{"type": "user", "timestamp": "2026-11-12T10:00:00.000Z", "message": {"role": "user", "content": prompt}}]
+    def transcript(self, name, prompt, messages, done=True, model_alias="sonnet", base=None):
+        base = chief.parse_time("2026-11-12T10:00:00.000Z") if base is None else base
+        stamp = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        lines = [{"type": "user", "timestamp": stamp(base), "message": {"role": "user", "content": prompt}}]
         for index, (model, usage) in enumerate(messages):
             message = {"id": f"msg_{name}_{index}", "model": model, "role": "assistant", "usage": usage,
                        "stop_reason": "end_turn" if done and index == len(messages) - 1 else "tool_use",
                        "content": [{"type": "text", "text": f"DONE from {name}"}]}
             # Streaming writes the same message id more than once; only the last copy counts.
-            lines.append({"type": "assistant", "timestamp": f"2026-11-12T10:0{index + 1}:00.000Z", "message": dict(message, usage={**usage, "output_tokens": 1})})
-            lines.append({"type": "assistant", "timestamp": f"2026-11-12T10:0{index + 1}:30.000Z", "message": message})
+            lines.append({"type": "assistant", "timestamp": stamp(base + 60 * (index + 1)), "message": dict(message, usage={**usage, "output_tokens": 1})})
+            lines.append({"type": "assistant", "timestamp": stamp(base + 60 * (index + 1) + 30), "message": message})
         (self.projects / f"agent-{name}.jsonl").write_text("\n".join(json.dumps(line) for line in lines) + "\n")
         (self.projects / f"agent-{name}.meta.json").write_text(json.dumps({"agentType": "general-purpose", "description": f"{name} job", "model": model_alias}))
 
@@ -772,12 +774,67 @@ class PlanTasksTest(Workspace):
         (self.repo / "ws" / "progress.md").write_text("Task 1: complete\nTask 2: dispatched\n")
         run = self.start(title="X")
         chief.set_phase(str(run), "implement", plan="plan.md", workspace="ws")
-        self.transcript("rev", f"Run: {run}   Task: 2   Role: reviewer", [("claude-opus-5-5", {"input_tokens": 10, "output_tokens": 10})], done=False)
+        self.transcript("rev", f"Run: {run}   Task: 2   Role: reviewer", [("claude-opus-5-5", {"input_tokens": 10, "output_tokens": 10})], done=False, base=time.time() - 120)
         tasks = {t["id"]: t["status"] for t in self.board()["runs"][0]["tasks"]}
         self.assertEqual(tasks, {"1": "done", "2": "review", "3": "queued"})
 
 
+class LastMessageTest(Workspace):
+    def test_trailing_metadata_is_not_activity(self):
+        lines = [json.dumps(r) for r in [
+            {"type": "user", "timestamp": "2026-11-17T15:49:17.097Z", "message": {"role": "user", "content": "hi"}},
+            {"type": "assistant", "timestamp": "2026-11-17T15:49:25.594Z", "message": {"id": "m", "role": "assistant", "content": []}},
+            {"type": "system", "subtype": "stop_hook_summary", "timestamp": "2026-11-17T15:49:25.632Z"},
+            {"type": "api-request", "timestamp": "2026-11-17T15:50:00Z"},
+            {"type": "queue-operation", "timestamp": "2026-11-17T15:51:00Z"},
+            {"type": "last-prompt"}, {"type": "cost-state"}, {"type": "tools-used"},
+        ]]
+        self.assertEqual(chief.parse_messages(lines, PRICES)["last_at"], "2026-11-17T15:49:25.594Z")
+        self.assertIsNone(chief.parse_messages([json.dumps({"type": "last-prompt"})], PRICES)["last_at"])
+
+    def test_no_timestamped_message_falls_back_to_the_mtime(self):
+        run = self.start(title="X")
+        path = self.projects / "agent-bare.jsonl"
+        path.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": f"Run: {run}   Task: 1   Role: implement"}}) + "\n"
+                        + json.dumps({"type": "tools-used", "tools": []}) + "\n")
+        os.utime(path, (time.time() - 60, time.time() - 60))
+        row = self.board()["runs"][0]["agents"][0]
+        self.assertAlmostEqual(row["active"], os.path.getmtime(path), places=3)
+        self.assertEqual(row["status"], "running")
+
+    def test_a_subagent_is_stale_from_its_last_message_not_its_mtime(self):
+        run = self.start(title="X")
+        usage = [("claude-sonnet-5-5", {"input_tokens": 1, "output_tokens": 1})]
+        self.transcript("old", f"Run: {run}   Task: 1   Role: implement", usage, done=False, base=time.time() - 3600)
+        with open(self.projects / "agent-old.jsonl", "a") as handle:
+            handle.write(json.dumps({"type": "tools-used", "tools": []}) + "\n")  # bumps the mtime to now
+        self.transcript("new", f"Run: {run}   Task: 2   Role: implement", usage, done=False, base=time.time() - 120)
+        status = {a["id"]: a["status"] for a in self.board()["runs"][0]["agents"]}
+        self.assertEqual((status["claude-old"], status["claude-new"]), ("stopped", "running"))
+
+
 class SpendAndQuietTest(Workspace):
+    def test_a_stopped_chief_session_goes_quiet_despite_trailing_records(self):
+        run = self.start(title="Abandoned")
+        state = json.loads((run / "run.json").read_text())
+        state["started"] = state["phases"][0]["at"] = "2026-01-01T00:00:00Z"
+        state["session_id"] = "stop0001"
+        (run / "run.json").write_text(json.dumps(state))
+        base = {"sessionId": "stop0001", "isSidechain": False}
+        records = [
+            {**base, "type": "user", "timestamp": "2026-01-01T00:00:10Z", "message": {"role": "user", "content": f"/chief {run}"}},
+            {**base, "type": "assistant", "timestamp": "2026-01-01T00:00:20Z", "message": {"id": "m1", "model": "claude-opus-5-5", "role": "assistant",
+                "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": [{"type": "text", "text": "chief-run.py start"}]}},
+            {**base, "type": "system", "subtype": "stop_hook_summary", "timestamp": "2026-01-01T00:00:21Z"},
+            {"type": "last-prompt", "sessionId": "stop0001"}, {"type": "cost-state", "sessionId": "stop0001"}, {"type": "tools-used", "sessionId": "stop0001"},
+        ]
+        (self.config / "projects" / "-repo" / "stop0001.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")  # mtime is now
+        card = self.board()["runs"][0]
+        row = next(a for a in card["agents"] if a["id"] == "chief")
+        self.assertEqual(row["status"], "stopped")
+        self.assertTrue(card["quiet"])
+        self.assertEqual(card["last_activity"], "2026-01-01T00:00:20Z")
+
     def test_spend_has_24_hours_of_buckets_and_a_burn_rate(self):
         now = time.time()
         bucket = int(now // chief.BUCKET_SECONDS)
@@ -813,6 +870,24 @@ class ArchiveTest(Workspace):
         chief.archive_runs(str(self.repo), [done.name], archived=False)
         self.assertEqual(len(self.board()["runs"]), 2)
 
+    def test_an_archived_run_still_working_counts_its_current_spend(self):
+        run = self.start(title="Busy")
+        self.codex_record(run, "first")
+        chief.archive_runs(str(self.repo), [run.name], config_dir=str(self.config), prices=PRICES)
+        self.assertAlmostEqual(self.board()["spend"]["all_runs"], 0.078, places=3)
+        self.codex_record(run, "second")  # spend that arrives after the archive
+        board = self.board()
+        self.assertAlmostEqual(board["spend"]["all_runs"], 0.156, places=3)
+        self.assertEqual(board["runs"], [])
+
+    def test_an_archived_run_that_finishes_counts_the_spend_added_after_the_archive(self):
+        run = self.start(title="Busy")
+        self.codex_record(run, "first")
+        chief.archive_runs(str(self.repo), [run.name], config_dir=str(self.config), prices=PRICES)
+        self.codex_record(run, "second")  # spend that arrives after the archive
+        chief.set_phase(str(run), "done", config_dir=str(self.config), prices=PRICES)
+        self.assertAlmostEqual(self.board()["spend"]["all_runs"], 0.156, places=3)
+
     def test_archive_state_survives_re_registering(self):
         run = self.start(title="X")
         chief.archive_runs(str(self.repo), [run.name], config_dir=str(self.config), prices=PRICES)
@@ -845,6 +920,470 @@ class ArchiveTest(Workspace):
         out = subprocess.run([sys.executable, "-B", str(SCRIPT), "archive", "--done"], cwd=self.repo, env=env, capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(json.loads(out.stdout)["archived"], [chief.list_runs(str(self.repo))[0]["key"]])
+
+
+class ArchiveDoneFlagTest(Workspace):
+    def archive_cli(self, *args):
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.config), "CHIEF_DASHBOARD": "off"}
+        return subprocess.run([sys.executable, "-B", str(SCRIPT), "archive", *args], cwd=self.repo, env=env, capture_output=True, text=True)
+
+    def test_done_with_named_runs_is_refused_and_archives_nothing(self):
+        finished, named = self.start(title="Finished"), self.start(title="Named")
+        chief.set_phase(str(finished), "done")
+        out = self.archive_cli(named.name, "--done")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertEqual(out.stdout, "")
+        self.assertEqual(out.stderr.strip(), "chief-run: --done archives every finished run; run it on its own, without run names")
+        self.assertEqual([r["archived"] for r in chief.list_runs(str(self.repo))], [None, None])
+
+    def test_a_bare_done_still_sweeps_every_finished_run(self):
+        finished, live = self.start(title="Finished"), self.start(title="Live")
+        chief.set_phase(str(finished), "done")
+        out = self.archive_cli("--done")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(len(json.loads(out.stdout)["archived"]), 1)
+        self.assertEqual([r["title"] for r in self.board()["runs"]], ["Live"])
+
+
+class ResumedRunTest(Workspace):
+    """A run resumed in a new Claude Code session: back on the board, driven by the newest session, every session kept."""
+
+    BEGAN = chief.parse_time("2026-01-01T00:00:00Z")  # long ago, so no chat in these tests counts as live
+    FIRST, SECOND = "aaaa1111", "bbbb2222"
+    FIRST_USAGE = {"input_tokens": 1_000_000, "output_tokens": 0}  # $4.00 on claude-opus-5-5
+    SECOND_USAGE = {**WRITE_1H, "input_tokens": 2_000_000, "output_tokens": 0}  # $8.024, and a one-hour cache
+
+    def setUp(self):
+        super().setUp()
+        chief.OPENED_CHATS.clear()
+        self.addCleanup(chief.OPENED_CHATS.clear)
+
+    def stamp(self, t):
+        return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def old_run(self, **kwargs):
+        run = self.start(title="X", **kwargs)
+        state = json.loads((run / "run.json").read_text())
+        state["started"] = state["phases"][0]["at"] = self.stamp(self.BEGAN)
+        (run / "run.json").write_text(json.dumps(state))
+        return run
+
+    def session(self, run, session_id, verb, offset, usage=None, title=None, cwd=None, age=None):
+        """A main session whose last message came `offset` seconds after the run began. Returns its transcript path."""
+        base = {"sessionId": session_id, "isSidechain": False, "cwd": cwd or str(self.repo)}
+        lines = [
+            {**base, "type": "user", "uuid": f"{session_id}-user", "timestamp": self.stamp(self.BEGAN + offset - 30),
+             "message": {"role": "user", "content": "/chief add CSV export"}},
+            {**base, "type": "assistant", "uuid": f"{session_id}-assistant", "timestamp": self.stamp(self.BEGAN + offset), "message": {
+                "id": f"msg_{session_id}", "model": "claude-opus-5-5", "role": "assistant", "stop_reason": "tool_use",
+                "usage": usage or self.FIRST_USAGE,
+                "content": [{"type": "tool_use", "name": "Bash", "input": {"command": f"python3 chief-run.py {verb} {run.name}  # {run}"}}]}},
+        ]
+        if title:
+            lines.append({"type": "ai-title", "aiTitle": title})
+        return self.write_session(session_id, lines, age)
+
+    def write_session(self, session_id, lines, age=None):
+        path = self.config / "projects" / "-repo" / f"{session_id}.jsonl"
+        path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+        stale = time.time() - 86400 if age is None else time.time() - age
+        os.utime(path, (stale, stale))
+        return path
+
+    def replayed(self, run, source, session_id, offset=None, usage=None, title=None):
+        """A resumed chat: a transcript that starts as a verbatim copy of `source` (the old session id, uuids, message ids,
+        timestamps and usage, as Claude Code writes it), then adds its own messages when `offset` is given."""
+        lines = [json.loads(line) for line in source.read_text().splitlines()]
+        if offset is not None:
+            base = {"sessionId": session_id, "isSidechain": False, "cwd": str(self.repo)}
+            lines += [
+                {**base, "type": "user", "uuid": f"{session_id}-user", "timestamp": self.stamp(self.BEGAN + offset - 30),
+                 "message": {"role": "user", "content": "carry on"}},
+                {**base, "type": "assistant", "uuid": f"{session_id}-assistant", "timestamp": self.stamp(self.BEGAN + offset), "message": {
+                    "id": f"msg_{session_id}", "model": "claude-opus-5-5", "role": "assistant", "stop_reason": "tool_use",
+                    "usage": usage or self.SECOND_USAGE,
+                    "content": [{"type": "tool_use", "name": "Bash", "input": {"command": f"python3 chief-run.py phase {run.name}"}}]}},
+            ]
+        if title:
+            lines.append({"type": "ai-title", "aiTitle": title})
+        return self.write_session(session_id, lines)
+
+    def two_sessions(self, **second):
+        run = self.old_run(session_id=self.FIRST)
+        self.session(run, self.FIRST, "start", 600, title="First chat")
+        self.session(run, self.SECOND, "phase", 90_000, usage=second.pop("usage", self.SECOND_USAGE), title="Resumed chat", **second)
+        return run
+
+    def card(self, run):
+        return next(item for item in self.board()["runs"] if item["id"] == run.name)
+
+    def pointer(self, run):
+        return chief.read_json(chief.pointer_path(str(self.repo.resolve()), run.name))
+
+    def archive(self, run):
+        chief.archive_runs(str(self.repo), [run.name], config_dir=str(self.config), prices=PRICES)
+
+    def sessions_of(self, run):
+        return json.loads((run / "run.json").read_text()).get("sessions")
+
+    def phase_cli(self, run, phase, session_id):
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.config), "CHIEF_DASHBOARD": "off", "CLAUDE_CODE_SESSION_ID": session_id}
+        return subprocess.run([sys.executable, "-B", str(SCRIPT), "phase", run.name, phase], cwd=self.repo, env=env, capture_output=True, text=True)
+
+    # an archived run that resumes comes back
+
+    def assert_back_on_the_board(self, run):
+        self.assertIn(run.name, [r["id"] for r in self.board()["runs"]])
+        self.assertFalse(self.card(run)["archived"])
+        self.assertNotIn("archived", self.pointer(run))
+        self.assertNotIn("totals", self.pointer(run))
+
+    def test_a_run_archived_while_working_stays_archived_across_phase_changes(self):
+        run = self.start(title="Archived at work", session_id=self.FIRST)
+        chief.set_phase(str(run), "implement", session_id=self.FIRST)
+        self.archive(run)
+        for phase in ("review", "plan", "implement", "report"):
+            chief.set_phase(str(run), phase, session_id=self.FIRST)  # the same session going on: not a resume
+            self.assertTrue(self.pointer(run)["archived"], phase)
+            self.assertIn("totals", self.pointer(run), phase)
+            self.assertNotIn(run.name, [r["id"] for r in self.board()["runs"]], phase)
+
+    def test_a_run_archived_while_paused_comes_back_when_it_goes_to_work(self):
+        for phase in ("done", "paused"):
+            run = self.start(title=f"Archived while {phase}", session_id=self.FIRST)
+            chief.set_phase(str(run), phase, session_id=self.FIRST)
+            self.archive(run)
+            chief.set_phase(str(run), "implement", session_id=self.FIRST)
+            self.assert_back_on_the_board(run)
+
+    def test_a_run_archived_at_work_comes_back_in_a_new_session(self):
+        run = self.start(title="Resumed", session_id=self.FIRST)
+        chief.set_phase(str(run), "implement", session_id=self.FIRST)
+        self.archive(run)
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        self.assert_back_on_the_board(run)
+
+    def test_the_stale_archived_totals_are_dropped_and_the_spend_is_counted_once(self):
+        run = self.start(title="Busy")
+        self.codex_record(run, "first")
+        chief.set_phase(str(run), "paused")
+        self.archive(run)
+        self.assertAlmostEqual(self.pointer(run)["totals"]["total_cost_usd"], 0.078, places=3)
+        self.codex_record(run, "second")
+        chief.set_phase(str(run), "implement")
+        board = self.board()
+        self.assertEqual([r["id"] for r in board["runs"]], [run.name])
+        self.assertAlmostEqual(board["spend"]["all_runs"], 0.156, places=3)  # live, not the stored 0.078 on top
+        self.assertEqual(board["archived_count"], 0)
+
+    def test_done_and_paused_keep_the_archive_rule(self):
+        for phase in ("done", "paused"):
+            run = self.start(title=f"Archived then {phase}")
+            self.codex_record(run, f"job-{phase}")
+            self.archive(run)
+            chief.set_phase(str(run), phase, config_dir=str(self.config), prices=PRICES)
+            self.assertTrue(self.pointer(run)["archived"], phase)  # still archived: done and paused never bring it back
+            self.assertAlmostEqual(self.pointer(run)["totals"]["total_cost_usd"], 0.078, places=3)
+            self.assertNotIn(run.name, [r["id"] for r in self.board()["runs"]], phase)
+
+    def test_pausing_a_resumed_run_leaves_it_on_the_board(self):
+        run = self.start(title="X")
+        chief.set_phase(str(run), "paused")
+        self.archive(run)
+        chief.set_phase(str(run), "implement")
+        chief.set_phase(str(run), "paused", config_dir=str(self.config), prices=PRICES)
+        self.assertEqual([r["id"] for r in self.board()["runs"]], [run.name])
+        self.assertNotIn("archived", self.pointer(run))  # it was not archived any more, so paused has nothing to re-archive
+        chief.set_phase(str(run), "implement")
+        chief.set_phase(str(run), "done", config_dir=str(self.config), prices=PRICES)
+        self.assertEqual([r["id"] for r in self.board()["runs"]], [run.name])
+
+    def test_a_run_that_was_never_archived_is_not_touched_by_a_phase(self):
+        run = self.start(title="X")
+        chief.set_phase(str(run), "implement")
+        self.assertEqual(self.pointer(run), {"id": run.name, "dir": str(run.resolve()), "repo": str(self.repo.resolve())})
+
+    # the session that drives the run
+
+    def test_start_records_the_session_in_the_list(self):
+        self.assertEqual(self.sessions_of(self.start(session_id=self.FIRST)), [self.FIRST])
+        self.assertEqual(self.sessions_of(self.start()), [])
+        self.assertEqual(self.sessions_of(self.start(session_id="../x")), [])
+
+    def test_a_phase_in_another_session_makes_it_the_current_one_and_keeps_the_first(self):
+        run = self.start(session_id=self.FIRST)
+        chief.set_phase(str(run), "research", session_id=self.FIRST)  # the same session again changes nothing
+        self.assertEqual((chief.load_run(str(run))["session_id"], self.sessions_of(run)), (self.FIRST, [self.FIRST]))
+        chief.set_phase(str(run), "plan", session_id=self.SECOND)
+        state = chief.load_run(str(run))
+        self.assertEqual((state["session_id"], state["sessions"]), (self.SECOND, [self.FIRST, self.SECOND]))
+        chief.set_phase(str(run), "implement", session_id=self.FIRST)  # going back to an earlier session makes it the latest
+        state = chief.load_run(str(run))
+        self.assertEqual((state["session_id"], state["sessions"]), (self.FIRST, [self.SECOND, self.FIRST]))
+
+    def test_the_session_id_comes_from_claude_code_when_not_given(self):
+        run = self.start(session_id=self.FIRST)
+        with unittest.mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": self.SECOND}):
+            chief.set_phase(str(run), "implement")
+        self.assertEqual(self.sessions_of(run), [self.FIRST, self.SECOND])
+        chief.set_phase(str(run), "review")  # no id in the environment: nothing to record
+        self.assertEqual(self.sessions_of(run), [self.FIRST, self.SECOND])
+        for bad in ("../../etc/x", "a/b", ""):
+            chief.set_phase(str(run), "review", session_id=bad)
+            self.assertEqual(chief.load_run(str(run))["session_id"], self.SECOND)
+
+    def test_the_board_follows_the_newest_session(self):
+        run = self.two_sessions()
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        card = self.card(run)
+        row = next(a for a in card["agents"] if a["id"] == "chief")
+        self.assertEqual((row["session_id"], row["chat_title"], row["has_transcript"]), (self.SECOND, "Resumed chat", True))
+        self.assertEqual((card["session_id"], card["chat_title"]), (self.SECOND, "Resumed chat"))
+        self.assertEqual(card["cache"], {"last_at": int(self.BEGAN) + 90_000, "ttl_s": 3600})  # the new session's, not yesterday's
+        self.assertEqual(row["cache"], card["cache"])
+        self.assertEqual(row["status"], "stopped")
+
+    def test_the_first_session_stays_listed_as_an_earlier_chief_row(self):
+        run = self.two_sessions()
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        chiefs = [a for a in self.card(run)["agents"] if a["role"] == "chief"]
+        self.assertEqual([(a["session_id"], a["tokens"]["input"]) for a in chiefs], [(self.FIRST, 1_000_000), (self.SECOND, 2_000_000)])
+        self.assertEqual([a["id"] for a in chiefs].count("chief"), 1)
+        self.assertEqual(len({a["id"] for a in chiefs}), 2)
+        self.assertTrue(all(a["has_transcript"] for a in chiefs))
+
+    def test_the_cost_covers_every_session(self):
+        run = self.two_sessions()
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        price = lambda usage: chief.price_claude("claude-opus-5-5", usage, PRICES)
+        expected = price(self.FIRST_USAGE) + price(self.SECOND_USAGE)
+        self.assertAlmostEqual(expected, 12.024, places=3)
+        card = self.card(run)
+        self.assertAlmostEqual(card["totals"]["claude"]["cost_usd"], expected, places=3)
+        self.assertEqual(card["totals"]["claude"]["agents"], 2)
+
+    # a resumed chat that starts as a copy of the old one
+
+    def copied_pair(self):
+        """The first session's records, replayed in the second session's file, then the second session's own messages."""
+        run = self.old_run(session_id=self.FIRST)
+        first = self.session(run, self.FIRST, "start", 600, title="First chat")
+        second = self.replayed(run, first, self.SECOND, offset=90_000, title="Resumed chat")
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        return run, first, second
+
+    def chiefs(self, run):
+        return [a for a in self.card(run)["agents"] if a["role"] == "chief"]
+
+    def test_a_replayed_message_is_counted_once_in_the_oldest_session(self):
+        run, _, _ = self.copied_pair()
+        first, second = self.chiefs(run)
+        self.assertEqual((first["session_id"], first["tokens"]["input"], first["cost_usd"]), (self.FIRST, 1_000_000, 4.0))
+        self.assertEqual((second["session_id"], second["tokens"]["input"]), (self.SECOND, 2_000_000))  # not 3,000,000
+        price = lambda usage: chief.price_claude("claude-opus-5-5", usage, PRICES)
+        self.assertAlmostEqual(second["cost_usd"], price(self.SECOND_USAGE), places=6)
+        card = self.card(run)
+        self.assertAlmostEqual(card["totals"]["claude"]["cost_usd"], 12.024, places=3)  # not 16.024
+        self.assertEqual(card["totals"]["claude"]["agents"], 2)
+        self.assertAlmostEqual(self.board()["spend"]["all_runs"], 12.024, places=3)
+        self.assertIn("Claude subtotal: $12.02 over 2 agent(s)",
+                      chief.summary_markdown(str(self.repo), str(run), config_dir=str(self.config), prices=PRICES))
+
+    def test_a_copied_session_starts_at_its_own_first_message(self):
+        run, _, _ = self.copied_pair()
+        first, second = self.chiefs(run)
+        self.assertEqual(first["started"], self.stamp(self.BEGAN + 600 - 30))
+        self.assertEqual(second["started"], self.stamp(self.BEGAN + 90_000 - 30))  # not the copied first message, which is the first row's
+        self.assertEqual([a["session_id"] for a in self.chiefs(run)], [self.FIRST, self.SECOND])  # so the rows sort oldest first
+        self.assertEqual(second["cache"], {"last_at": int(self.BEGAN) + 90_000, "ttl_s": 3600})
+        self.assertEqual((self.card(run)["session_id"], self.card(run)["chat_title"]), (self.SECOND, "Resumed chat"))
+
+    def test_a_copy_is_counted_in_the_newer_row_when_the_old_transcript_is_gone(self):
+        run, first, _ = self.copied_pair()
+        first.unlink()
+        rows = self.chiefs(run)
+        self.assertEqual([(a["id"], a["session_id"], a["tokens"]["input"]) for a in rows], [("chief", self.SECOND, 3_000_000)])
+        self.assertAlmostEqual(self.card(run)["totals"]["claude"]["cost_usd"], 12.024, places=3)  # still once, now all in one row
+        self.assertEqual(rows[0]["started"], self.stamp(self.BEGAN + 600 - 30))  # the copy's first message is the only one there is
+
+    def test_a_copied_session_with_no_message_of_its_own_costs_nothing(self):
+        run = self.old_run(session_id=self.FIRST)
+        first = self.session(run, self.FIRST, "start", 600)
+        self.replayed(run, first, self.SECOND, title="Resumed chat")
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        rows = self.chiefs(run)
+        self.assertEqual([(a["session_id"], a["tokens"]["input"]) for a in rows], [(self.FIRST, 1_000_000), (self.SECOND, 0)])
+        self.assertEqual(self.card(run)["totals"]["claude"]["cost_usd"], 4.0)
+        self.assertEqual((self.card(run)["session_id"], self.card(run)["chat_title"]), (self.SECOND, "Resumed chat"))
+        self.assertGreater(chief.parse_time(rows[1]["started"]), chief.parse_time(rows[0]["started"]))  # no message of its own: it starts when its file was last written, after the first
+
+    def test_a_copied_session_with_no_message_of_its_own_keeps_the_cache(self):
+        run = self.old_run(session_id=self.FIRST)
+        first = self.session(run, self.FIRST, "start", 600, usage=self.SECOND_USAGE)
+        self.replayed(run, first, self.SECOND)
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        warm = {"last_at": int(self.BEGAN) + 600, "ttl_s": 3600}  # the copy is the newest prompt-cache activity there is
+        row = next(a for a in self.chiefs(run) if a["id"] == "chief")
+        self.assertEqual((row["session_id"], row["tokens"]["input"], row["cost_usd"]), (self.SECOND, 0, 0.0))  # the cost is still not counted twice
+        self.assertEqual((row["cache"], self.card(run)["cache"]), (warm, warm))
+
+    def test_a_resumed_chats_cache_read_takes_the_ttl_of_a_copied_write(self):
+        run = self.old_run(session_id=self.FIRST)
+        first = self.session(run, self.FIRST, "start", 600, usage=self.SECOND_USAGE)  # a one-hour write
+        self.replayed(run, first, self.SECOND, offset=90_000, usage=READ_ONLY)  # the resumed chat only reads the cache
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        self.assertEqual(self.card(run)["cache"], {"last_at": int(self.BEGAN) + 90_000, "ttl_s": 3600})  # not the five minutes of a bare read
+
+    def test_parse_messages_skips_what_an_earlier_transcript_already_counted(self):
+        record = lambda kind, uuid, message_id=None, tokens=10: json.dumps({
+            "type": kind, "uuid": uuid, "timestamp": "2026-01-01T00:00:10Z",
+            "message": {"role": kind, "content": "hi", **({"id": message_id, "model": "claude-opus-5-5", "usage": {"input_tokens": tokens, "output_tokens": 0}} if message_id else {})}})
+        old = [record("user", "u1"), record("assistant", "a1", "m1", 5), record("assistant", "a2", "m1", 7)]  # a streamed message is written twice
+        seen = set()
+        first = chief.parse_messages(old, PRICES, seen=seen)
+        self.assertEqual((first["tokens"]["input"], first["started"]), (7, "2026-01-01T00:00:10Z"))  # a streamed copy still replaces the one before it
+        again = chief.parse_messages(old + [record("assistant", "a3", "m2", 3)], PRICES, seen=seen)
+        self.assertEqual(again["tokens"]["input"], 3)
+        self.assertEqual(chief.parse_messages(old, PRICES, seen=seen)["started"], None)  # nothing in it is its own
+        self.assertEqual(chief.parse_messages(old, PRICES)["tokens"]["input"], 7)  # without a seen-set nothing is skipped
+
+    def test_the_summary_lists_a_priced_chief_row_per_session(self):
+        run = self.two_sessions(usage={"input_tokens": 2_000_000, "output_tokens": 0})  # no cache tokens: a round $8.00
+        chief.set_phase(str(run), "report", session_id=self.SECOND)
+        text = chief.summary_markdown(str(self.repo), str(run), config_dir=str(self.config), prices=PRICES)
+        rows = [line for line in text.splitlines() if "| chief |" in line]
+        self.assertEqual(len(rows), 2, text)
+        self.assertIn(self.FIRST[:8], rows[0])
+        self.assertIn(self.SECOND[:8], rows[1])
+        self.assertTrue(rows[0].endswith("| $4.00 |") and rows[1].endswith("| $8.00 |"), rows)
+        self.assertIn("Claude subtotal: $12.00 over 2 agent(s)", text)
+
+    def test_a_run_with_one_session_prints_its_chief_row_as_before(self):
+        run = self.old_run(session_id=self.FIRST)
+        self.session(run, self.FIRST, "start", 600)
+        text = chief.summary_markdown(str(self.repo), str(run), config_dir=str(self.config), prices=PRICES)
+        self.assertEqual([line for line in text.splitlines() if "| chief |" in line],
+                         ["| claude | claude-opus-5-5 | chief | - | stopped | in 1,000,000 / cache w 0 r 0 / out 0 | $4.00 |"])
+
+    def test_a_resumed_session_that_only_ran_phase_is_still_found(self):
+        run = self.old_run(session_id=self.FIRST)
+        self.session(run, self.SECOND, "phase", 600)  # its transcript never mentions `chief-run.py start`
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        self.assertEqual(next(a for a in self.card(run)["agents"] if a["id"] == "chief")["session_id"], self.SECOND)
+
+    def test_a_session_whose_transcript_is_gone_gets_no_row(self):
+        run = self.old_run(session_id=self.FIRST)
+        self.session(run, self.SECOND, "phase", 600)
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)  # the first one's file was never written
+        self.assertEqual([a["session_id"] for a in self.card(run)["agents"] if a["role"] == "chief"], [self.SECOND])
+        self.assertEqual(self.card(run)["session_id"], self.SECOND)
+
+    def test_a_session_without_a_transcript_still_names_the_card(self):
+        run = self.start(session_id=self.FIRST)
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        self.assertEqual(self.card(run)["session_id"], self.SECOND)
+
+    def test_an_earlier_session_is_never_the_chief_when_the_newest_has_no_transcript(self):
+        run = self.old_run(session_id=self.FIRST)
+        self.session(run, self.FIRST, "start", 600, title="First chat")
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)  # the newest session's file is not written yet
+        card = self.card(run)
+        self.assertEqual([(a["id"], a["session_id"]) for a in card["agents"] if a["role"] == "chief"], [(f"chief-{self.FIRST}", self.FIRST)])
+        self.assertEqual((card["session_id"], card["chat_title"], card["cache"]), (self.SECOND, None, None))  # the card still names the newest
+        self.assertEqual(card["totals"]["claude"]["cost_usd"], 4.0)  # the earlier session's spend still counts
+        self.assertEqual(self.open_chat(run), ((404, {"error": "no chief chat is recorded for this run"}), []))
+        self.session(run, self.SECOND, "phase", 90_000)  # once it is written, it is the chief
+        self.assertEqual([(a["id"], a["session_id"]) for a in self.chiefs(run)], [(f"chief-{self.FIRST}", self.FIRST), ("chief", self.SECOND)])
+        self.assertEqual(self.open_chat(run), ((200, {"opened": "Terminal"}), [(str(self.repo), self.SECOND)]))
+
+    # older run.json files
+
+    def test_a_run_json_with_only_session_id_keeps_working(self):
+        run = self.old_run()
+        state = json.loads((run / "run.json").read_text())
+        state.pop("sessions", None)
+        state["session_id"] = self.FIRST
+        (run / "run.json").write_text(json.dumps(state))
+        self.session(run, self.FIRST, "start", 600, title="First chat")
+        self.assertEqual(chief.run_sessions(chief.load_run(str(run))), [self.FIRST])
+        row = next(a for a in self.card(run)["agents"] if a["id"] == "chief")
+        self.assertEqual((row["session_id"], row["chat_title"], row["tokens"]["input"]), (self.FIRST, "First chat", 1_000_000))
+        self.assertEqual(self.card(run)["session_id"], self.FIRST)
+        chief.set_phase(str(run), "review", session_id=self.FIRST)
+        self.assertEqual(self.sessions_of(run), [self.FIRST])
+
+    def test_a_later_session_is_added_after_the_one_an_old_run_json_holds(self):
+        run = self.old_run()
+        state = json.loads((run / "run.json").read_text())
+        state.pop("sessions", None)
+        state["session_id"] = self.FIRST
+        (run / "run.json").write_text(json.dumps(state))
+        self.session(run, self.FIRST, "start", 600)
+        self.session(run, self.SECOND, "phase", 90_000, title="Resumed chat")
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        state = chief.load_run(str(run))
+        self.assertEqual((state["session_id"], state["sessions"]), (self.SECOND, [self.FIRST, self.SECOND]))
+        self.assertEqual(self.card(run)["chat_title"], "Resumed chat")
+
+    def test_unsafe_ids_in_the_list_are_ignored(self):
+        run = self.old_run(session_id=self.FIRST)
+        state = json.loads((run / "run.json").read_text())
+        state["sessions"] = ["../../etc/x", self.FIRST, 7, None, "a/b", self.FIRST]
+        (run / "run.json").write_text(json.dumps(state))
+        self.assertEqual(chief.run_sessions(chief.load_run(str(run))), [self.FIRST])
+        state["sessions"] = "not a list"
+        self.assertEqual(chief.run_sessions(state), [self.FIRST])
+
+    # the dashboard's command line
+
+    def test_the_phase_command_resumes_an_archived_run_in_a_new_session(self):
+        run = self.two_sessions()
+        self.archive(run)
+        self.assertEqual(self.board()["runs"], [])
+        out = self.phase_cli(run, "implement", self.SECOND)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout)["phase"], "implement")
+        card = self.card(run)
+        self.assertEqual((card["session_id"], card["chat_title"]), (self.SECOND, "Resumed chat"))
+        self.assertEqual(self.sessions_of(run), [self.FIRST, self.SECOND])
+
+    # Open chat
+
+    def open_chat(self, run, launch=None):
+        calls = []
+        with unittest.mock.patch.object(chief.sys, "platform", "darwin"):
+            result = chief.open_chat(str(self.repo), chief.run_key(str(self.repo.resolve()), run.name), config_dir=str(self.config),
+                                     prices=PRICES, launch=launch or (lambda cwd, session: calls.append((cwd, session))))
+        return result, calls
+
+    def test_open_chat_resumes_the_newest_session(self):
+        run = self.two_sessions()
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        self.assertEqual(self.open_chat(run), ((200, {"opened": "Terminal"}), [(str(self.repo), self.SECOND)]))
+
+    def test_open_chat_still_refuses_a_live_current_session(self):
+        run = self.two_sessions(age=0)  # the newest transcript was written just now
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        self.assertEqual(self.open_chat(run), ((409, {"error": "live"}), []))
+
+    def test_an_earlier_live_session_does_not_block_the_current_one(self):
+        run = self.two_sessions()
+        os.utime(self.config / "projects" / "-repo" / f"{self.FIRST}.jsonl", None)
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        self.assertEqual(self.open_chat(run), ((200, {"opened": "Terminal"}), [(str(self.repo), self.SECOND)]))
+
+    def test_a_just_opened_current_session_is_not_opened_twice(self):
+        run = self.two_sessions()
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        self.assertEqual(self.open_chat(run)[0], (200, {"opened": "Terminal"}))
+        self.assertEqual(self.open_chat(run), ((409, {"error": "live"}), []))
+
+    def test_open_chat_keeps_the_id_rule_for_the_current_session(self):
+        run = self.old_run(session_id=self.FIRST)
+        self.session(run, self.FIRST, "start", 600)
+        self.session(run, "-opt1234", "phase", 90_000)
+        chief.set_phase(str(run), "implement", session_id="-opt1234")  # a plain id, but one that would read as an option
+        self.assertEqual(self.open_chat(run), ((404, {"error": "no chief chat is recorded for this run"}), []))
 
 
 class RenderTranscriptTest(unittest.TestCase):

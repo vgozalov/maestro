@@ -62,7 +62,7 @@ BUCKET_SECONDS = 600  # spend is kept in 10-minute buckets for the sparkline and
 VERDICT = re.compile(r"^\W*(?:status\W*)?(DONE_WITH_CONCERNS|DONE|BLOCKED|FAILED|NEEDS_CONTEXT|APPROVED|CHANGES(?:_REQUESTED)?)\b", re.I)
 DEFAULT_DAYS = 14
 DASHBOARD_APP = "chief-dashboard"
-DASHBOARD_VERSION = 5  # a running dashboard older than this is replaced by the next run
+DASHBOARD_VERSION = 6  # a running dashboard older than this is replaced by the next run
 DEFAULT_PORT = int(os.environ.get("CHIEF_DASHBOARD_PORT") or 8765)
 AUTO_IDLE_HOURS = 6  # a dashboard the chief started exits after this long with no page open
 PROVIDERS = ("claude", "chatgpt")
@@ -197,12 +197,13 @@ def start_run(repo, text, title=None, source="chat", now=None, session_id=None):
     with open(os.path.join(run_dir, "task.md"), "w", encoding="utf-8") as handle:
         handle.write(f"# {title}\n\nSource: {source}\n\n{text.strip()}\n")
     started = now_iso()
-    write_json(os.path.join(run_dir, "run.json"), {
+    state = {
         "id": run_id, "title": title, "source": source, "repo": repo, "started": started, "ended": None,
-        "phase": "intake", "plan": None, "workspace": None,
-        "session_id": plain_session_id(session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")),
+        "phase": "intake", "plan": None, "workspace": None, "session_id": None, "sessions": [],
         "phases": [{"phase": "intake", "at": started, "usage": usage_snapshot()}],
-    })
+    }
+    note_session(state, plain_session_id(session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")))
+    write_json(os.path.join(run_dir, "run.json"), state)
     try:
         register_run(run_dir, repo)
     except OSError as error:  # the run still works; only the shared dashboard misses it
@@ -242,14 +243,15 @@ def load_run(run_dir):
     return state
 
 
-def set_phase(run_dir, phase, plan=None, workspace=None):
+def set_phase(run_dir, phase, plan=None, workspace=None, config_dir=None, prices=None, session_id=None):
     if phase not in PHASES:
         raise ValueError(f"unknown phase {phase!r}; one of: {', '.join(PHASES)}")
     state = load_run(run_dir)
     at = now_iso()
+    resumed = state.get("phase") in ("done", "paused")  # a run that goes back to work, as opposed to one that goes on working
     state["phase"] = phase
-    if not state.get("session_id"):  # a run from before the id was recorded learns it at its next phase
-        state["session_id"] = plain_session_id(os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    # the session running this phase drives the run now: a run from before the id was recorded, or one resumed in a new session, learns it here
+    resumed |= note_session(state, plain_session_id(session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")))
     state["phases"].append({"phase": phase, "at": at, "usage": usage_snapshot()})
     if plan:
         state["plan"] = plan
@@ -257,6 +259,12 @@ def set_phase(run_dir, phase, plan=None, workspace=None):
         state["workspace"] = workspace
     state["ended"] = at if phase == "done" else None
     write_json(os.path.join(run_dir, "run.json"), state)
+    run = read_run(run_dir, None)
+    if run and (read_json(pointer_path(run["repo"], run["id"])) or {}).get("archived"):
+        if phase in ("done", "paused"):
+            set_archived(run, True, build_cards([run], config_dir, prices)[0]["totals"])  # the totals taken at archive time are stale
+        elif resumed:  # a run the user archived while it worked stays archived through its ordinary phase changes
+            set_archived(run, False)  # a resumed run returns to the board, without its stale totals
     return state
 
 
@@ -325,11 +333,32 @@ def price_codex(model, usage, prices):
 _TRANSCRIPTS = {}
 _SESSIONS = {}
 SESSION_ID = re.compile(r"^[A-Za-z0-9-]{1,80}$")
+SESSION_MARKERS = ("chief-run.py start", "chief-run.py phase")  # a main session is the chief's when it ran either; a resumed one only runs phase
 
 
 def plain_session_id(value):
     """The id when it is a plain session id, else None."""
     return value if isinstance(value, str) and SESSION_ID.fullmatch(value) else None
+
+
+def run_sessions(run):
+    """The chief sessions that drove a run, oldest first and the current one last. A run.json from before the
+    list holds only `session_id`; a tampered or foreign entry is dropped."""
+    listed = run.get("sessions")
+    ids = list(dict.fromkeys(sid for sid in (listed if isinstance(listed, list) else []) if plain_session_id(sid)))
+    current = plain_session_id(run.get("session_id"))
+    return [sid for sid in ids if sid != current] + [current] if current else ids
+
+
+def note_session(state, session_id):
+    """Make `session_id` the run's current chief session, keeping the ones before it. No id changes nothing.
+    Returns whether another session is current now."""
+    if not session_id:
+        return False
+    changed = state.get("session_id") != session_id
+    state["sessions"] = [sid for sid in run_sessions(state) if sid != session_id] + [session_id]
+    state["session_id"] = session_id
+    return changed
 
 
 def prompt_text(entry):
@@ -387,10 +416,22 @@ def cache_ttl(usage, written_ttl):
     return written_ttl, None
 
 
-def parse_messages(lines, prices, start=None, end=None, sidechain=None):
-    """Usage, cost, recent tool calls, spend per 10 minutes and the last reply over a transcript's assistant messages."""
+def record_key(entry):
+    """What names a user or assistant record across transcripts: an assistant message's id (a streamed message is
+    written more than once), else the record's uuid. A resumed chat can start as a verbatim copy of the old one."""
+    message = entry.get("message")
+    if entry.get("type") == "assistant" and isinstance(message, dict) and message.get("id"):
+        return "message:" + str(message["id"])
+    return "uuid:" + str(entry["uuid"]) if entry.get("uuid") else None
+
+
+def parse_messages(lines, prices, start=None, end=None, sidechain=None, seen=None):
+    """Usage, cost, recent tool calls, spend per 10 minutes and the last reply over a transcript's assistant messages.
+
+    `seen` is shared by the transcripts of one run, oldest first: a record an earlier one already counted is skipped
+    as if absent (cost, start, last message), except for the cache, and this transcript's own records are added to it afterwards."""
     messages, last_text, last_entry, first_at, last_at = {}, "", None, None, None
-    acts, stamps = [], {}
+    acts, stamps, mine = [], {}, set()
     last_cache, written_ttl = None, None  # the newest message's (time, ttl), and the ttl of the latest cache write
     for line in lines:
         try:
@@ -402,6 +443,15 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
             continue
         if sidechain is not None and bool(entry.get("isSidechain")) != sidechain:
             continue
+        key = record_key(entry) if entry.get("type") in ("user", "assistant") else None
+        if key and seen and key in seen:  # a copy of a record an earlier transcript counted
+            message = entry.get("message")
+            if entry.get("type") == "assistant" and isinstance(message, dict) and message.get("usage") and message.get("id"):
+                written_ttl, ttl = cache_ttl(message["usage"], written_ttl)  # the cache is the latest activity, not a cost: a copy still warms it
+                last_cache = (at, ttl)
+            continue
+        if key:
+            mine.add(key)  # only after the pass: a message streamed twice in one transcript still counts once, by its last copy
         if entry.get("type") in ("user", "assistant"):
             last_entry = entry
             first_at = first_at or entry.get("timestamp")
@@ -442,13 +492,16 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None):
             if stamps.get(message_id):
                 bucket = int(stamps[message_id] // BUCKET_SECONDS)
                 spend[bucket] = spend.get(bucket, 0.0) + price
+    if seen is not None:
+        seen.update(mine)
     done = bool(last_entry and last_entry.get("type") == "assistant"
                 and (last_entry.get("message") or {}).get("stop_reason") == "end_turn")
     context = {"last": sizes[-1], "peak": max(sizes)} if sizes else None
     cache = {"last_at": int(last_cache[0]), "ttl_s": last_cache[1]} if last_cache and last_cache[0] is not None else None
     return {"tokens": tokens, "cost_usd": None if unpriced else round(cost, 6), "model": model,
             "report": last_text[-6000:], "started": first_at, "ended": last_at if done else None, "done": done,
-            "acts": [act for act in reversed(acts[-6:])], "spend": spend, "context": context, "cache": cache}
+            "acts": [act for act in reversed(acts[-6:])], "spend": spend, "context": context, "cache": cache,
+            "last_at": last_at}
 
 
 def parse_subagent(path, prices):
@@ -498,7 +551,8 @@ def claude_agents(config_dir, runs, prices):
             continue
         for run in runs:
             if same_run(parsed["tag_run"], run["dir"], run["id"]):
-                status = "done" if parsed["done"] else ("stopped" if time.time() - mtime > STALE_SECONDS else "running")
+                active = parse_time(parsed["last_at"]) or mtime  # the last message, not the file's mtime: trailing records bump that
+                status = "done" if parsed["done"] else ("stopped" if time.time() - active > STALE_SECONDS else "running")
                 verdict = verdict_of(parsed["report"]) if parsed["done"] else None
                 if verdict in ("BLOCKED", "NEEDS_CONTEXT"):
                     status = "blocked"
@@ -509,27 +563,25 @@ def claude_agents(config_dir, runs, prices):
                     "model": parsed["model"], "task": parsed["task"], "role": parsed["role"],
                     "description": parsed["description"], "status": status, "started": parsed["started"],
                     "ended": parsed["ended"], "tokens": parsed["tokens"], "cost_usd": parsed["cost_usd"],
-                    "report": parsed["report"], "verdict": verdict, "acts": parsed["acts"], "active": mtime,
+                    "report": parsed["report"], "verdict": verdict, "acts": parsed["acts"], "active": active,
                     "context": parsed["context"], "_spend": parsed["spend"],
                     "session_id": os.path.basename(os.path.dirname(os.path.dirname(path))),
                     "agent_id": os.path.basename(path)[len("agent-"): -len(".jsonl")], "_transcript": path})
                 break
     for run in runs:
-        chief = chief_session(config_dir, run, prices, since)
-        if chief:
-            found[run["id"]].append(chief)
+        found[run["id"]].extend(chief_sessions(config_dir, run, prices, since))
     return found
 
 
 def session_text(path):
-    """A main session's transcript, or None when it never started a run; remembered until the file changes."""
+    """A main session's transcript, or None when it never started or moved a run; remembered until the file changes."""
     stat = os.stat(path)
     cached = _SESSIONS.get(path)
     if cached and cached[:2] == (stat.st_mtime, stat.st_size):
         return cached[2]
     with open(path, encoding="utf-8", errors="replace") as handle:
         text = handle.read()
-    text = text if "chief-run.py start" in text else None  # never keep a transcript that is not ours
+    text = text if any(marker in text for marker in SESSION_MARKERS) else None  # never keep a transcript that is not ours
     _SESSIONS[path] = (stat.st_mtime, stat.st_size, text)
     return text
 
@@ -578,19 +630,43 @@ def session_cwd(text):
     return None
 
 
-def chief_session(config_dir, run, prices, since):
-    """The chief session.s own tokens: the main session that started this run, inside the run's time."""
-    start = parse_time(run["started"])
-    end = parse_time(run.get("ended"))
-    found = None
-    recorded = session_transcript(config_dir, run.get("session_id"))
-    if recorded:
+def read_chief_session(run, prices, path, text, sure, seen, first):
+    """One chief session's own tokens, inside the run's time, without the records `seen` says an earlier session
+    counted; None when its transcript cannot be stamped. It starts at its own first message; a session with none
+    yet (a resumed chat that is only a copy so far) starts when its file was last written, and the run's first
+    session, with no message in the run's time, at the run's start."""
+    parsed = parse_messages(text.splitlines(), prices, start=parse_time(run["started"]) - 120, end=parse_time(run.get("ended")),
+                            sidechain=False, seen=seen)
+    try:
+        active = parse_time(parsed["last_at"]) or os.path.getmtime(path)
+    except OSError:
+        return None
+    started = parsed["started"] or (run["started"] if first else datetime.fromtimestamp(active, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    status = "done" if run.get("ended") else ("running" if time.time() - active < STALE_SECONDS else "stopped")
+    return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
+            "description": "the chief session", "status": status,
+            "started": started, "ended": run.get("ended"), "tokens": parsed["tokens"],
+            "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
+            "active": active, "context": parsed["context"], "_spend": parsed["spend"],
+            "cache": None if run.get("ended") else parsed["cache"],
+            "session_id": os.path.basename(path)[: -len(".jsonl")], "chat_title": chat_title(text),
+            "cwd": session_cwd(text), "_transcript": path if sure else None}
+
+
+def chief_sessions(config_dir, run, prices, since):
+    """The chief rows of a run, oldest session first: one per recorded session whose transcript is found. The
+    newest recorded session's row is "chief"; any other is "chief-<session id>", so with the newest transcript
+    missing there is no "chief" row. When no recorded session has a transcript, the first main session that names
+    the run stands in, and is the "chief" only for a run that records no session at all."""
+    found = []
+    for session_id in run_sessions(run):
+        path = session_transcript(config_dir, session_id)
         try:
-            text = session_text(recorded)
+            text = session_text(path) if path else None
         except OSError:
             text = None
         if text and run["id"] in text:
-            found = (recorded, text, True)
+            found.append((path, text, True))
     if not found:
         for path in glob.glob(os.path.join(config_dir, "projects", "*", "*.jsonl")):
             try:
@@ -600,22 +676,15 @@ def chief_session(config_dir, run, prices, since):
             except OSError:
                 continue
             if text and run["id"] in text:
-                found = (path, text, run["dir"] in text)  # an id alone is a loose match
+                found.append((path, text, run["dir"] in text))  # an id alone is a loose match
                 break
-    if not found:
-        return None
-    path, text, sure = found
-    parsed = parse_messages(text.splitlines(), prices, start=start - 120, end=end, sidechain=False)
-    mtime = os.path.getmtime(path)
-    status = "done" if run.get("ended") else ("running" if time.time() - mtime < STALE_SECONDS else "stopped")
-    return {"id": "chief", "provider": "claude", "model": parsed["model"], "task": "-", "role": "chief",
-            "description": "the chief session", "status": status,
-            "started": run["started"], "ended": run.get("ended"), "tokens": parsed["tokens"],
-            "cost_usd": parsed["cost_usd"], "report": "", "verdict": None, "acts": parsed["acts"][:3],
-            "active": mtime, "context": parsed["context"], "_spend": parsed["spend"],
-            "cache": None if run.get("ended") else parsed["cache"],
-            "session_id": os.path.basename(path)[: -len(".jsonl")], "chat_title": chat_title(text),
-            "cwd": session_cwd(text), "_transcript": path if sure else None}
+    seen = set()  # the records each session counts; a resumed chat's copy of an earlier one's is not counted again
+    rows = [row for row in (read_chief_session(run, prices, *item, seen, index == 0) for index, item in enumerate(found)) if row]
+    newest = (run_sessions(run) or [None])[-1]
+    for row in rows:
+        if newest and row["session_id"] != newest:  # the chief is the newest recorded session, never an older one standing in for it
+            row.update(id="chief-" + row["session_id"], description="an earlier chief session")
+    return rows
 
 
 # ---- Codex agents, from run-codex-job.py's records ----------------------------------------
@@ -940,7 +1009,7 @@ def build_cards(runs, config_dir=None, prices=None):
         card = {key: run.get(key) for key in ("key", "id", "title", "source", "phase", "phases", "started", "ended",
                                               "plan", "workspace", "dir", "repo", "archived")}
         chief_row = next((agent for agent in agents if agent["id"] == "chief"), None) or {}
-        card.update(session_id=chief_row.get("session_id") or plain_session_id(run.get("session_id")),
+        card.update(session_id=chief_row.get("session_id") or (run_sessions(run) or [None])[-1],
                     chat_title=chief_row.get("chat_title"), cwd=chief_row.get("cwd") or run.get("repo"),
                     cache=chief_row.get("cache"))
         last = max([parse_time(entry.get("at")) or 0 for entry in run.get("phases") or []]
@@ -983,11 +1052,13 @@ def build_board(repo=None, config_dir=None, prices=None, with_git=True, days=Non
     checkout's git state; with_git=False skips it. Runs that ended more than `days` ago count as archived."""
     every_run = list_runs(repo)
     shown = [run for run in every_run if is_archived(run, days) == archived]
-    stored = [run for run in every_run if run.get("archived") and run.get("archived_totals")]
+    archived_runs = [run for run in every_run if run.get("archived") and run.get("archived_totals")]
+    working = [] if archived else [run for run in archived_runs if run.get("phase") not in ("done", "paused")]
+    stored = [run for run in archived_runs if run not in working]  # a run archived mid-work is counted live below
     cards = build_cards(shown, config_dir, prices)
     agents = [agent for card in cards for agent in card["agents"]]
     archived_total = 0.0 if archived else sum((run["archived_totals"] or {}).get("total_cost_usd") or 0 for run in stored)
-    spend = spend_summary(agents, archived_total)
+    spend = spend_summary(agents + [agent for card in build_cards(working, config_dir, prices) for agent in card["agents"]], archived_total)
     for agent in agents:
         agent.pop("_spend", None)
         agent["has_transcript"] = bool(agent.pop("_transcript", None))
@@ -1030,15 +1101,17 @@ def summary_markdown(repo, run_dir, config_dir=None, prices=None):
         agent.pop("_spend", None)
     lines = [f"Run {card['id']}: {card['title']}", "",
              "| provider | model | role | task | status | tokens | API-eq $ |", "| --- | --- | --- | --- | --- | --- | --- |"]
+    sessions = sum(1 for agent in card["agents"] if agent["role"] == "chief")
     for agent in card["agents"]:
         tokens = agent["tokens"]
+        task = f"session {agent['session_id'][:8]}" if sessions > 1 and agent["role"] == "chief" else agent["task"]  # a run resumed in a new session has a chief row per session
         if agent["provider"] == "chatgpt":
             detail = f"in {tokens['input']:,} (cached {tokens['cached']:,}) / out {tokens['output']:,} (reasoning {tokens['reasoning']:,})"
         else:
             detail = (f"in {tokens['input']:,} / cache w {tokens['cache_write_5m'] + tokens['cache_write_1h']:,}"
                       f" r {tokens['cache_read']:,} / out {tokens['output']:,}")
         cost = "in the resume below" if agent.get("superseded") else money(agent["cost_usd"])
-        lines.append(f"| {agent['provider']} | {agent['model'] or '?'} | {agent['role']} | {agent['task']} | {agent['status']} | {detail} | {cost} |")
+        lines.append(f"| {agent['provider']} | {agent['model'] or '?'} | {agent['role']} | {task} | {agent['status']} | {detail} | {cost} |")
     totals = card["totals"]
     for name, label in (("claude", "Claude"), ("chatgpt", "ChatGPT")):
         bucket = totals[name]
@@ -1530,7 +1603,7 @@ def main():
     commands.add_parser("register", help="add this checkout's existing runs to the shared dashboard")
     archive_command = commands.add_parser("archive", help="hide runs from the dashboard, or bring them back")
     archive_command.add_argument("runs", nargs="*", help="run ids or dashboard keys")
-    archive_command.add_argument("--done", action="store_true", help="every finished run on this machine")
+    archive_command.add_argument("--done", action="store_true", help="every finished run on this machine; use it on its own, without run names")
     archive_command.add_argument("--restore", action="store_true", help="bring the runs back instead")
     board_command = commands.add_parser("board", help="print the dashboard data")
     serve_command = commands.add_parser("serve", help="serve the dashboard for every repo on 127.0.0.1")
@@ -1582,6 +1655,8 @@ def main():
                 print(summary_markdown(repo, run_dir))
         elif args.command == "archive":
             keys = list(args.runs)
+            if args.done and keys:
+                raise ValueError("--done archives every finished run; run it on its own, without run names")
             if args.done:
                 keys += [run["key"] for run in list_runs(repo) if run.get("phase") == "done" and not run.get("archived")]
             if not keys:
