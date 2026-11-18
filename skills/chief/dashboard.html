@@ -104,9 +104,13 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 @keyframes play { 0%, 100% { transform: rotate(-2.2deg) translateY(0); } 25% { transform: rotate(0deg) translateY(-1.5px); } 50% { transform: rotate(2.2deg) translateY(0); } 75% { transform: rotate(0deg) translateY(-1.5px); } }
 @keyframes flicker { 50% { opacity: .5; } }
 
+/* The toggle row: its own line under the header row, in the flow (nothing is positioned over the gauges). It stays when the
+   hall is hidden, and its bottom padding then closes the frame the way the header's top padding opens it. */
+.stage-bar { display: flex; justify-content: flex-end; padding: 2px 18px 10px; }
 /* The hall: holds the row of stages. Each live run is its own small stage (.ens); the hall adds no band or line of its own,
-   so the stage's gradient runs straight on into the row. */
-.hall { position: relative; padding: 16px 2px 8px; overflow: hidden; }
+   so the stage's gradient runs straight on into the row. Hidden with [hidden]: nothing inside it animates, and the script has
+   already taken the stages out. */
+.hall { position: relative; padding: 0 2px 8px; overflow: hidden; }
 /* The row: stages share ONE row, 3 px apart. They grow to 486 px, never shrink below 236 px; past that the row scrolls. */
 .hall > .row { display: flex; gap: 3px; overflow-x: auto; scroll-snap-type: x proximity; padding: 2px 0 8px; scrollbar-width: thin; scrollbar-color: rgba(228,176,74,.35) transparent; }
 .row > .ens:first-child { margin-left: auto; }           /* centred when it fits, scrollable from the left edge when not */
@@ -429,7 +433,8 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
       <div class="ledger" id="ledger"></div>
     </div>
   </div>
-  <div class="hall"><div class="row" id="stage-row" aria-label="Ensembles: one per live chief run"></div></div>
+  <div class="stage-bar"><button class="chip" id="stage-toggle" type="button" aria-expanded="true" aria-controls="stage-hall">hide stage</button></div>
+  <div class="hall" id="stage-hall"><div class="row" id="stage-row" aria-label="Ensembles: one per live chief run"></div></div>
 </section>
 
 <div class="bar">
@@ -648,7 +653,7 @@ const NOTE_SHAPES = [
 
 /* ---------- the stage: one small stage per live run ----------
    Stage.mount(rowEl) once, then Stage.render(ensembles) on every poll. It diffs by run and agent id and writes only
-   what changed, so the robots keep playing across polls. It touches no DOM until mount. */
+   what changed, so the robots keep playing across polls. It touches no DOM until mount. Stage.stop() ends it all (collapsed). */
 const Stage = (() => {
   const NS = 'http://www.w3.org/2000/svg'
   const VW = 360, Y0 = -12, VH = 250, CX = 180, FY = 226, K = .32    // viewBox 0 -12 360 250 (top 40 = label lanes + notes)
@@ -665,6 +670,10 @@ const Stage = (() => {
     else if (node[key] !== value) node[key] = value
   }
   const flag = (node, cls, on) => { if (node.classList.contains(cls) !== on) node.classList.toggle(cls, on) }
+  // Every timer the stage sets goes through later(), so stop() can clear whatever is pending. The stage has no frame loop.
+  const timers = new Set()
+  const later = (fn, ms) => { const id = setTimeout(() => { timers.delete(id); fn() }, ms); timers.add(id); return id }
+  const cancel = (id) => { clearTimeout(id); timers.delete(id) }
 
   /* ---------- drawings ---------- */
   const ring = (r, h) => `M ${CX - r} ${FY - h} A ${r} ${r * K} 0 0 1 ${CX + r} ${FY - h} Z`
@@ -798,7 +807,7 @@ const Stage = (() => {
     let over = false
     // the freed chair seats a waiting player straight away; never re-entered from inside update
     const done = () => { if (over) return; over = true; g.remove(); st.releasing.delete(i); if (!st.leaving && ens.get(st.id) === st) update(st, st.last) }
-    if (reduce()) { setTimeout(done, 0); return }
+    if (reduce()) { later(done, 0); return }
     const x = SEATS[i].x, dx = wingX(x) - x, walk = g.querySelector('.walk'), dur = 1500 + Math.abs(dx) * 3
     const pop = el('g', {}, g)
     el('path', { d: NOTE_SHAPES[0].fill, fill: '#FFD27A' }, pop)
@@ -811,7 +820,7 @@ const Stage = (() => {
       { transform: `translate(${(dx * .4).toFixed(1)}px, -3px)`, opacity: 1, offset: .6 },
       { transform: `translate(${dx.toFixed(1)}px, 0px)`, opacity: 0 },
     ], { duration: dur, easing: 'ease-in', fill: 'forwards' })
-    setTimeout(done, dur + 100)                                                        // timer, not onfinish: hidden tabs pause animations
+    later(done, dur + 100)                                                             // timer, not onfinish: hidden tabs pause animations
   }
 
   /* ---------- the chief: back/front turn and poses ---------- */
@@ -821,23 +830,23 @@ const Stage = (() => {
     const swap = () => { st.back.style.display = view === 'back' ? '' : 'none'; st.front.style.display = view === 'front' ? '' : 'none' }
     if (reduce()) return swap()
     st.turn.animate([{ transform: 'scaleX(1)' }, { transform: 'scaleX(.06) translateY(-2px)' }], { duration: 170, easing: 'ease-in' })
-    setTimeout(() => { swap(); st.turn.animate([{ transform: 'scaleX(.06) translateY(-2px)' }, { transform: 'scaleX(1)' }], { duration: 230, easing: 'ease-out' }) }, 165)
+    later(() => { swap(); st.turn.animate([{ transform: 'scaleX(.06) translateY(-2px)' }, { transform: 'scaleX(1)' }], { duration: 230, easing: 'ease-out' }) }, 165)
   }
   function pose(st, kind, side) {
     st.facing = kind
     st.front.setAttribute('class', 'c-front f-rest')                                // reset so the CSS animation restarts
     void st.front.getBBox()
     st.front.setAttribute('class', `c-front f-${kind}${side ? ' to-' + side : ''}`)
-    clearTimeout(st.timer)
+    cancel(st.timer)
     if (FACE[kind] === Infinity) return                                             // the bow at done: stays facing the house
-    st.timer = setTimeout(() => { st.facing = null; st.readyAt = performance.now() + COOLDOWN; turnTo(st, 'back') }, FACE[kind])
+    st.timer = later(() => { st.facing = null; st.readyAt = performance.now() + COOLDOWN; turnTo(st, 'back') }, FACE[kind])
   }
   function face(st, kind, side) {
     const gate = faceGate(st, kind, performance.now())
     if (gate === 'skip') return
     if (gate === 'upgrade') return pose(st, kind, side)                            // upgrade the pose already showing
-    if (gate === 'queue') { clearTimeout(st.qt); st.qt = setTimeout(() => face(st, kind, side), st.readyAt - performance.now()); return }
-    turnTo(st, 'front'); setTimeout(() => pose(st, kind, side), reduce() ? 0 : 170)
+    if (gate === 'queue') { cancel(st.qt); st.qt = later(() => face(st, kind, side), st.readyAt - performance.now()); return }
+    turnTo(st, 'front'); later(() => pose(st, kind, side), reduce() ? 0 : 170)
   }
 
   /* ---------- notes: on fixed beats of an 8-beat phrase ---------- */
@@ -950,26 +959,26 @@ const Stage = (() => {
     for (const [c, dx] of moves) if (Math.abs(dx) >= 1) c.animate([{ transform: `translateX(${dx.toFixed(1)}px)` }, { transform: 'none' }], { duration: 650, easing: 'cubic-bezier(.3,.1,.2,1)' })
   }
   function bow(st) {                                                               // chief turns to the house and bows, then stays front
-    clearTimeout(st.timer); clearTimeout(st.qt)
+    cancel(st.timer); cancel(st.qt)
     st.facing = 'bow'; turnTo(st, 'front')
-    setTimeout(() => pose(st, 'bow'), reduce() ? 0 : 170)
+    later(() => pose(st, 'bow'), reduce() ? 0 : 170)
   }
   function leave(st, withBow) {
     if (st.leaving) return
     st.leaving = true
     const R = reduce(), t1 = R ? 0 : (withBow ? BOW_HOLD : 300)                   // 1. bow, hold  2. curtains close  3. fade  4. remove + reflow
     if (withBow) bow(st)
-    setTimeout(() => { st.root.classList.remove('idle', 'closed'); st.root.classList.add('closing') }, t1)
-    setTimeout(() => st.root.classList.add('leaving'), t1 + (R ? 0 : CLOSE_MS))
-    setTimeout(() => flip((measure) => {
-      clearTimeout(st.timer); clearTimeout(st.qt); sizes.unobserve(st.svg); measure(); st.root.remove(); ens.delete(st.id)
+    later(() => { st.root.classList.remove('idle', 'closed'); st.root.classList.add('closing') }, t1)
+    later(() => st.root.classList.add('leaving'), t1 + (R ? 0 : CLOSE_MS))
+    later(() => flip((measure) => {
+      cancel(st.timer); cancel(st.qt); sizes.unobserve(st.svg); measure(); st.root.remove(); ens.delete(st.id)
       reconcile(lastList, measure)                                                        // a run that came back meanwhile gets a fresh stage; none left -> placeholder
     }), t1 + (R ? 0 : CLOSE_MS + FADE_MS))
   }
   function opening(st, k) {                                                        // curtains closed, then open (staggered when several appear at once)
     st.root.classList.add('closed')
     st.root.style.setProperty('--open-d', `${(.25 + k * .3).toFixed(2)}s`)
-    setTimeout(() => st.root.classList.remove('closed'), 60)
+    later(() => st.root.classList.remove('closed'), 60)
   }
   function buildGhost() {
     const root = document.createElement('article')
@@ -1018,7 +1027,18 @@ const Stage = (() => {
     lastList = list
     flip((measure) => reconcile(list, measure))
   }
-  return { mount, render, mounted: () => row !== null }
+  // Collapsing the stage: clear every pending timer, cancel every animation, stop watching and take every stage out of the
+  // row. Nothing of it survives; the next render builds the stages again from the board, so toggling never stacks anything.
+  function stop() {
+    if (!row) return
+    for (const id of timers) clearTimeout(id)
+    timers.clear()
+    if (typeof row.getAnimations === 'function') row.getAnimations({ subtree: true }).forEach((a) => a.cancel())
+    for (const st of ens.values()) sizes.unobserve(st.svg)
+    ens.clear()
+    ;[...row.children].forEach((c) => c.remove())
+  }
+  return { mount, render, stop, mounted: () => row !== null }
 })()
 
 /* ---------- the stage header ---------- */
@@ -1052,12 +1072,32 @@ function renderStage() {
   stageTick()
 }
 /* Moves the stages on: called once per poll (from renderStage when the board changed, from poll when it did not), so
-   idle, leaving after IDLE_LEAVE and coming back happen on an unchanged board too. Adds no timer. */
+   idle, leaving after IDLE_LEAVE and coming back happen on an unchanged board too. Adds no timer. While the stage is collapsed
+   only the headline follows the board: the stage is neither mounted nor drawn. */
 function stageTick(nowMs = Date.now()) {
-  if (!Stage.mounted() && typeof ResizeObserver === 'function') Stage.mount($('stage-row'), { curtains: true })
   const list = stageList(nowMs)
-  Stage.render(list)
+  if (!stageCollapsed) {
+    if (!Stage.mounted() && typeof ResizeObserver === 'function') Stage.mount($('stage-row'), { curtains: true })
+    Stage.render(list)
+  }
   if (active) renderHeadline(list)
+}
+
+/* ---------- hide / show the stage ---------- */
+/* The choice lives in this browser under one key. Storage can be missing, full or refused: every access is guarded, and the
+   page then simply starts open. Collapsing stops the stage (Stage.stop); expanding draws it again from the current board. */
+const STAGE_KEY = 'chief.stage.collapsed'
+let stageCollapsed = false
+const stageSaved = () => { try { return localStorage.getItem(STAGE_KEY) === '1' } catch { return false } }
+const stageSave = (on) => { try { localStorage.setItem(STAGE_KEY, on ? '1' : '0') } catch {} }
+function setStage(collapsed, save = true) {
+  stageCollapsed = collapsed
+  $('stage-hall').hidden = collapsed
+  $('stage-toggle').setAttribute('aria-expanded', String(!collapsed))
+  $('stage-toggle').textContent = collapsed ? 'show stage' : 'hide stage'
+  if (save) stageSave(collapsed)
+  if (collapsed) Stage.stop()
+  else if (active) stageTick()
 }
 
 /* ---------- toolbar, notices, programme ---------- */
@@ -1487,6 +1527,8 @@ async function poll() {
     $('status').textContent = 'The dashboard server is not answering. The next chief run starts it again, or run: python3 <chief skill>/scripts/chief-run.py dashboard'
   }
 }
+$('stage-toggle').addEventListener('click', () => setStage(!stageCollapsed))
+setStage(stageSaved(), false)
 poll()
 setInterval(poll, POLL_MS)
 </script>

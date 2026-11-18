@@ -64,8 +64,10 @@ def page_script() -> str:
     return scripts[-1]
 
 
-def run_page(snippet: str, timeout: float = 20) -> Any:
-    """Run the page's script under Node with PRELUDE, then SNIPPET; return its JSON result."""
+def run_page(snippet: str, timeout: float = 20, before: str = "") -> Any:
+    """Run the page's script under Node with PRELUDE, then SNIPPET; return its JSON result.
+
+    BEFORE runs between PRELUDE and the page's script: for what the page reads while it loads (storage, timers)."""
     tail = (
         ";(async () => { " + snippet + " })()"
         ".then((v) => console.log(JSON.stringify(v === undefined ? null : v)))"
@@ -73,7 +75,7 @@ def run_page(snippet: str, timeout: float = 20) -> Any:
     )
     with tempfile.TemporaryDirectory() as tmp:
         js = Path(tmp) / "page.js"
-        js.write_text(PRELUDE + "\n" + page_script() + "\n" + tail)
+        js.write_text(PRELUDE + "\n" + before + "\n" + page_script() + "\n" + tail)
         proc = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
         raise AssertionError(proc.stderr)
@@ -823,6 +825,214 @@ class StageFrameTest(unittest.TestCase):
         emit = PAGE.read_text().split("function emit(")[1].split("\n  function ")[0]
         self.assertIn("fill: 'none'", emit)
         self.assertIn(".line", emit)
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class StageCollapseTest(unittest.TestCase):
+    """The stage can be hidden: collapsed means no animation work at all, and the rest of the page carries on."""
+    NOW = 1_800_000_000_000  # ms
+    KEY = "chief.stage.collapsed"
+    # Runs before the page loads. Counts every timer, frame request, interval and Web Animation the page asks for (nothing
+    # fires by itself; a test fires what it wants) and gives the stage a lenient fake DOM that counts its writes.
+    KIT = r"""
+const __probe = { timeout: 0, raf: 0, interval: 0, animate: 0, cancelled: 0, touched: 0, ro: 0 }
+const __timers = new Map(), __anims = new Set(), __seen = new Set()
+let __next = 1
+globalThis.setTimeout = (fn) => { __probe.timeout++; __timers.set(__next, fn); return __next++ }
+globalThis.clearTimeout = (id) => { __timers.delete(id) }
+globalThis.setInterval = () => { __probe.interval++; return __next++ }
+globalThis.requestAnimationFrame = () => { __probe.raf++; return __next++ }
+globalThis.matchMedia = () => ({ matches: false })
+globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' })
+globalThis.ResizeObserver = class { constructor() { __probe.ro++ } observe(n) { __seen.add(n) } unobserve(n) { __seen.delete(n) } }
+const __mk = () => {
+  const attrs = {}, classes = new Set(), subs = {}, touch = () => { __probe.touched++ }
+  let html = '', text = ''
+  const n = {
+    style: { setProperty() {} }, dataset: {}, children: [], parentNode: null, isConnected: false, title: '',
+    get innerHTML() { return html }, set innerHTML(v) { if (v !== html) touch(); html = v },
+    get textContent() { return text }, set textContent(v) { if (v !== text) touch(); text = v },
+    getAttribute: (k) => attrs[k] ?? null, setAttribute: (k, v) => { touch(); attrs[k] = String(v) },
+    classList: { contains: (c) => classes.has(c), toggle: (c, on) => { touch(); if (on) classes.add(c); else classes.delete(c) },
+      add: (...c) => { touch(); c.forEach((x) => classes.add(x)) }, remove: (...c) => { touch(); c.forEach((x) => classes.delete(x)) } },
+    querySelector: (sel) => (subs[sel] ||= __mk()), appendChild(c) { n.insertBefore(c, null) },
+    insertBefore(c, ref) { touch(); if (c.parentNode) c.remove(); const i = ref ? n.children.indexOf(ref) : n.children.length; n.children.splice(i, 0, c); c.parentNode = n; c.isConnected = true },
+    remove() { touch(); if (n.parentNode) { n.parentNode.children.splice(n.parentNode.children.indexOf(n), 1); n.parentNode = null; n.isConnected = false } },
+    getBoundingClientRect: () => ({ left: 0 }), getBBox() {}, insertAdjacentHTML() {},
+    animate() { __probe.animate++; const a = { cancel() { __probe.cancelled++; __anims.delete(a) } }; __anims.add(a); return a },
+  }
+  return n
+}
+document.createElement = __mk; document.createElementNS = __mk
+const __row = __mk()
+__row.getAnimations = () => [...__anims]
+__byId['stage-row'] = __row
+"""
+    STORAGE = {
+        "none": "",  # Node has no localStorage: the page's first read throws a ReferenceError
+        "empty": "const __s = new Map()",
+        "collapsed": "const __s = new Map([['chief.stage.collapsed', '1']])",
+        "open": "const __s = new Map([['chief.stage.collapsed', '0']])",
+        "junk": "const __s = new Map([['chief.stage.collapsed', 'maybe']])",
+    }
+    STORE = """Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+  getItem: (k) => (__s.has(k) ? __s.get(k) : null), setItem: (k, v) => { __s.set(k, String(v)) }, removeItem: (k) => { __s.delete(k) } } })"""
+    BROKEN = {
+        "denied": "Object.defineProperty(globalThis, 'localStorage', { configurable: true, get() { throw new Error('SecurityError') } })",
+        "full": "Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => null, setItem() { throw new Error('QuotaExceededError') } } })",
+        "unreadable": "Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem() { throw new Error('boom') }, setItem() { throw new Error('boom') } } })",
+    }
+    # Runs after the page loads: board feed, a click on the toggle, and a snapshot of everything the stage costs.
+    SETUP = """
+const NOW = 1800000000000; Date.now = () => NOW
+let current = null
+fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(current) })
+const click = () => $('stage-toggle').__fire('click')
+const state = () => ({ hidden: $('stage-hall').hidden, expanded: $('stage-toggle').getAttribute('aria-expanded'), label: $('stage-toggle').textContent })
+const snap = () => ({ kids: __row.children.length, timers: __timers.size, anims: __anims.size, observed: __seen.size, ...__probe })
+const titles = () => __row.children.map((c) => c.querySelector('h3').textContent)
+"""
+
+    def iso(self, ago_s):
+        return datetime.fromtimestamp(self.NOW / 1000 - ago_s, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def runs(self, n, players=2):
+        return [sample_run(key=f"r{i}@x", id=f"r{i}", title=f"Run {i}", last_activity=self.iso(10),
+                           agents=[agent("chief", "chief", kind="chief")] + [agent(f"r{i}p{k}", "implement") for k in range(players)])
+                for i in range(n)]
+
+    def board(self, n, players=2):
+        return json.dumps(sample_board(self.runs(n, players)))
+
+    def load(self, snippet, storage="empty"):
+        if storage in self.BROKEN:
+            before = self.KIT + self.BROKEN[storage]
+        else:
+            before = self.KIT + self.STORAGE[storage] + ("\n" + self.STORE if storage != "none" else "")
+        return run_page(self.SETUP + snippet, before=before)
+
+    def test_the_stage_is_open_by_default(self):
+        for storage in ("none", "empty", "junk", "open", "denied"):
+            with self.subTest(storage=storage):
+                out = self.load("return state()", storage)
+                self.assertEqual(out, {"hidden": False, "expanded": "true", "label": "hide stage"})
+
+    def test_the_toggle_collapses_the_stage_and_remembers_it(self):
+        out = self.load("""const open = state(); click(); const shut = state(); const saved = __s.get('chief.stage.collapsed')
+          click(); return [open, shut, saved, state(), __s.get('chief.stage.collapsed')]""")
+        self.assertEqual(out[0], {"hidden": False, "expanded": "true", "label": "hide stage"})
+        self.assertEqual(out[1], {"hidden": True, "expanded": "false", "label": "show stage"})
+        self.assertEqual(out[2], "1")
+        self.assertEqual(out[3], {"hidden": False, "expanded": "true", "label": "hide stage"})
+        self.assertEqual(out[4], "0")
+
+    def test_the_stored_choice_is_honoured_on_load(self):
+        self.assertEqual(self.load("return state()", "collapsed"), {"hidden": True, "expanded": "false", "label": "show stage"})
+        self.assertEqual(self.load("return state()", "open"), {"hidden": False, "expanded": "true", "label": "hide stage"})
+
+    def test_a_stage_collapsed_on_load_is_never_built(self):
+        out = self.load(f"""current = {self.board(2)}; await poll(); await poll()
+          return [snap(), Stage.mounted(), $('headline').innerHTML]""", "collapsed")
+        snap, mounted, headline = out
+        self.assertFalse(mounted)
+        self.assertEqual((snap["kids"], snap["timers"], snap["anims"], snap["observed"], snap["ro"]), (0, 0, 0, 0, 0))
+        self.assertEqual((snap["touched"], snap["timeout"], snap["animate"], snap["raf"]), (0, 0, 0, 0))
+        self.assertIn("4 players", headline)  # the header still counts what is on stage
+
+    def test_storage_that_throws_leaves_the_toggle_working(self):
+        for storage in self.BROKEN:
+            with self.subTest(storage=storage):
+                out = self.load(f"""current = {self.board(1)}; await poll(); click(); const shut = state(); const kids = __row.children.length
+                  click(); return [shut, kids, state(), __row.children.length]""", storage)
+                self.assertEqual(out[0], {"hidden": True, "expanded": "false", "label": "show stage"})
+                self.assertEqual(out[1], 0)
+                self.assertEqual(out[2], {"hidden": False, "expanded": "true", "label": "hide stage"})
+                self.assertEqual(out[3], 1)
+
+    def test_while_collapsed_a_board_refresh_leaves_the_stage_alone(self):
+        out = self.load(f"""current = {self.board(1)}; await poll(); const built = snap()
+          let renders = 0; const real = Stage.render; Stage.render = (l) => {{ renders++; return real(l) }}
+          click(); const shut = snap()
+          current = {self.board(3, 3)}; await poll(); await poll(); await poll()
+          return {{ built, shut, after: snap(), renders, headline: $('headline').innerHTML, prog: $('prog').innerHTML, where: $('where').textContent }}""")
+        self.assertEqual(out["built"]["kids"], 1)
+        self.assertGreater(out["built"]["observed"], 0)
+        self.assertEqual((out["shut"]["kids"], out["shut"]["timers"], out["shut"]["anims"], out["shut"]["observed"]), (0, 0, 0, 0))
+        self.assertEqual(out["after"], out["shut"])  # no stage DOM write, timer, frame, animation or observer after three polls
+        self.assertEqual(out["renders"], 0)
+        self.assertEqual(out["after"]["raf"], 0)
+        self.assertIn("3 ensembles", out["headline"])  # the header, programme and status line keep following the board
+        self.assertIn("Run 2", out["prog"])
+        self.assertIn("3 runs", out["where"])
+
+    def test_expanding_rebuilds_the_stage_from_the_current_board(self):
+        out = self.load(f"""current = {self.board(1)}; await poll(); click()
+          current = {self.board(3)}; await poll(); const shut = titles(); click(); const first = snap(); const names = titles()
+          return [shut, names, first]""")
+        self.assertEqual(out[0], [])
+        self.assertEqual(out[1], ["Run 0", "Run 1", "Run 2"])
+        self.assertGreater(out[2]["timers"], 0)  # the curtains are opening again
+        self.assertGreater(out[2]["observed"], 0)
+
+    def test_collapsing_cancels_every_timer_and_animation_the_stage_had_pending(self):
+        a = json.dumps(sample_board([sample_run(key="r0@x", id="r0", title="Run 0", last_activity=self.iso(10),
+                                                agents=[agent("chief", "chief", kind="chief"), agent("p0", "implement")])]))
+        b = json.dumps(sample_board([sample_run(key="r0@x", id="r0", title="Run 0", last_activity=self.iso(10),
+                                                agents=[agent("chief", "chief", kind="chief"), agent("p0", "implement"), agent("p1", "research")])]))
+        c = json.dumps(sample_board([sample_run(key="r0@x", id="r0", title="Run 0", last_activity=self.iso(10),
+                                                agents=[agent("chief", "chief", kind="chief"), agent("p1", "research")])]))
+        out = self.load(f"""current = {a}; await poll()
+          current = {b}; await poll()                      // a join: the chief turns to the house (timers, animations)
+          current = {c}; await poll()                      // a player walks off (the walk-off timer)
+          const busy = snap(); click(); const shut = snap(); const fired = [...__timers.values()].length
+          return [busy, shut, fired]""")
+        busy, shut, fired = out
+        self.assertGreater(busy["timers"], 2)
+        self.assertGreater(busy["anims"], 0)
+        self.assertEqual((shut["timers"], shut["anims"], shut["observed"], shut["kids"], fired), (0, 0, 0, 0, 0))
+        self.assertEqual(shut["animate"], busy["animate"])  # nothing was started on the way out
+
+    def test_expand_collapse_expand_leaves_exactly_one_loop(self):
+        out = self.load(f"""current = {self.board(2)}; await poll()
+          let renders = 0; const real = Stage.render; Stage.render = (l) => {{ renders++; return real(l) }}
+          const first = snap(), shown = titles()
+          for (let i = 0; i < 5; i++) {{ click(); click() }}
+          const again = snap(); renders = 0
+          await poll(); const afterPoll = snap()
+          return {{ first, shown, again, names: titles(), renders, afterPoll }}""")
+        self.assertEqual(out["shown"], ["Run 0", "Run 1"])
+        self.assertEqual(out["names"], ["Run 0", "Run 1"])  # five collapse/expand rounds later: still two stages, not twelve
+        for key in ("kids", "timers", "observed"):
+            self.assertEqual(out["again"][key], out["first"][key], key)
+        self.assertEqual(out["afterPoll"]["timers"], out["again"]["timers"])
+        self.assertEqual(out["renders"], 1)  # one stage tick per poll
+        self.assertEqual(out["afterPoll"]["interval"], 1)  # the page's own poll timer, and nothing else repeating
+        self.assertEqual(out["afterPoll"]["raf"], 0)
+
+    def test_every_timer_the_stage_sets_is_tracked_so_it_can_be_stopped(self):
+        stage = PAGE.read_text().split("const Stage = (() => {")[1].split("\n})()")[0]
+        self.assertEqual(len(re.findall(r"\bsetTimeout\(", stage)), 1)  # the tracked wrapper; every other call goes through it
+        for banned in ("setInterval(", "requestAnimationFrame("):
+            self.assertNotIn(banned, stage)
+
+    def test_the_toggle_is_a_real_button_between_the_header_and_the_hall(self):
+        stage = PAGE.read_text().split('<section class="stage"')[1].split("</section>")[0]
+        button = re.search(r'<button\b[^>]*\bid="stage-toggle"[^>]*>', stage).group(0)
+        for attr in ('type="button"', 'class="chip"', 'aria-expanded="true"', 'aria-controls="stage-hall"'):
+            self.assertIn(attr, button)
+        self.assertIn('>hide stage</button>', stage)
+        before, after = stage.split(button)
+        self.assertIn('id="ledger"', before)  # below the gauge row ...
+        self.assertEqual(len(re.findall(r"<div\b", before)) - len(re.findall(r"</div>", before)), 1)  # ... in a row of its own, not inside the header
+        self.assertIn('id="stage-hall"', after)  # and ahead of the hall it controls
+        self.assertIn('id="stage-row"', after)
+
+    def test_the_toggle_row_sits_in_the_flow_so_it_never_covers_the_gauges(self):
+        css = page_css()
+        bar = re.search(r"\.stage-bar\s*\{([^}]*)\}", css).group(1)
+        self.assertNotRegex(bar, r"position:\s*(absolute|fixed|sticky)")
+        self.assertNotRegex(bar, r"(^|[;\s])(top|bottom|transform|margin-top)\s*:")
+        self.assertRegex(css, r"\[hidden\]\s*\{\s*display:\s*none\s*!important")  # what hides the hall: no animation can run in it
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
