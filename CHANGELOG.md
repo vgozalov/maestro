@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.1 (2026-11-18)
+
+### Chief: dashboard restyle
+
+- Fixed: the header gauges are squareish again, as in 1.1.0: a dial with the 60% line and its flag, the 5-hour and weekly readings beside it, matched to the height of the ledger.
+- Fixed: the header row fills the width with no gap on its right, and stays legible on phones (the ledger fits a 320px screen).
+- Fixed: the programme's columns fill the width and wrap (260px basis, at most 650px, 34px rails for empty columns), and the page no longer scrolls sideways on phones.
+- Fixed: the stages use the panel frame, and notes no longer fill into blocks.
+- "Open chat" in the chief's panel resumes the chief chat in Terminal on macOS and replaces the VS Code link. `POST /open-chat` takes only the run key, refuses a chat that is live or was just opened (a double click opens one Terminal), and answers 500 on an unreadable run record. It checks Host and Origin, as `/archive` now does.
+- The stage section collapses, and the choice is remembered. Collapsed, it runs no timer or animation and draws nothing.
+- `DASHBOARD_VERSION` is 5: a running dashboard from 1.2.0 is replaced.
+
 ## 1.2.0 (2026-11-17)
 
 ### Chief: dashboard fixes
@@ -8,15 +20,14 @@
 - Fixed: an unknown `?run=` link shows a "Run not found" state (#1). One shared dashboard for every repo is kept.
 - Fixed: polling never rebuilds the score while you scroll, drag or select (#3).
 - Fixed: gauges and metrics sit in one row (#4).
-- Cards are at most 360px wide and never squeezed below 260px; the programme scrolls sideways on small screens. The page is no longer capped at 1600px, and the staff, measures and sparkline stay crisp.
-- Session badge and sibling runs, chat title, resume command, VS Code link, and read-only transcripts (#6, #7).
+- The page is no longer capped at 1600px, and the staff, measures and sparkline stay crisp.
+- Session badge and sibling runs, chat title, resume command, and read-only transcripts (#6, #7).
 - Context size is shown per Claude agent; Codex agents show as not reported (#8).
 - Every dashboard request checks its Host and header.
 - `DASHBOARD_VERSION` is 4: a running dashboard from an earlier version is replaced.
 - No model attribution on commits and PRs: a silent SessionStart hook sets Claude Code's `attribution` to empty strings in the user settings once per plugin version, only when the key is absent (backup at `settings.json.maestro-bak`; `MAESTRO_KEEP_ATTRIBUTION=1` opts out), and `git-check.py` warns about AI trailers in commits since the base.
 - The stage is redesigned: each chief run is its own small stage with a proscenium and curtains, and up to 10 playing robot agents grouped by role. The chief conducts while agents work, rests when the run is idle and bows when it is done; the stage turns to face the audience on joins, finishes and phase changes.
 - A prompt-cache badge on the run card and the score header shows whether the chief session's cache is hot (with the minutes left) or expired.
-- On a wide screen a busy programme column lays its cards two or three across.
 
 ## 1.1.0 (2026-11-14)
 
