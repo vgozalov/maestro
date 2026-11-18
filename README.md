@@ -32,6 +32,15 @@ Every skill here is a plain `SKILL.md` folder with a name of its own, so it inst
 
 Or by hand; none of these need a clone.
 
+### Codex plugin
+
+```bash
+codex plugin marketplace add vgozalov/maestro
+codex plugin add maestro@maestro
+```
+
+Update later with `codex plugin marketplace upgrade`. Use the plugin to give Codex the whole of maestro; the `npx skills` route below copies only the skills folders.
+
 ### Just these skills
 
 ```bash
@@ -97,6 +106,7 @@ Commit `.agents/skills/`, the `.claude/skills/` symlinks, `skills-lock.json` and
 ```bash
 npx skills@1.7.2 update -p -y    # this repo
 npx skills@1.7.2 update -g -y    # global skills
+codex plugin marketplace upgrade maestro    # the Codex plugin
 ```
 
 `update` re-fetches changed skills, keeps pinned tags, and keeps each skill tied to its source, so these skills keep updating from this repo.
@@ -273,7 +283,7 @@ A few rules keep this predictable:
 <summary><b>Why not a Claude Code plugin?</b></summary>
 <br>
 
-Plugin skills are namespaced (`my-plugin:wrap-up`), so they never take the place of a same-named skill from another source. Plugins also update themselves, and a plugin is Claude-only. Installing with `skills` gives one copy of each skill, under its plain name, for every agent, and updates only when you run `update`.
+Plugin skills are namespaced (`my-plugin:wrap-up`), so they never take the place of a same-named skill from another source. Plugins also update themselves, and a Claude Code plugin is Claude-only (Codex has its own plugin, see [Install](#install)). Installing with `skills` gives one copy of each skill, under its plain name, for every agent, and updates only when you run `update`.
 
 </details>
 

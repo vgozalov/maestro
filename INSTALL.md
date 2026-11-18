@@ -54,6 +54,15 @@ If another plugin already installs skills named `executing-plans`, `requesting-c
 
 **Upgrading from before 1.0.0:** `conduct` became `chief`, `parallel-agent-development` became `parallel-build`, and the `conductor` agent became `chief`. Remove the old skill folders or symlinks named `conduct` and `parallel-agent-development` from `.claude/skills/` and `.agents/skills/` (or the global ones), and the old `conductor.md` agent, after showing the user what you will delete.
 
+In addition, if the user wants Codex to have the whole plugin and its upgrades (the `npx` route copies only the skills folders), install the Codex plugin. It tracks the latest release, not `v1.1.0`:
+
+```bash
+codex plugin marketplace add vgozalov/maestro
+codex plugin add maestro@maestro
+codex plugin list                            # maestro@maestro  installed, enabled
+codex plugin marketplace upgrade maestro     # later, to update
+```
+
 ## 4. Install the agent
 
 The skills CLI installs skills, not agents, so fetch the agent file:
