@@ -215,7 +215,8 @@ class HeaderTest(unittest.TestCase):
             self.assertRegex(meter, want)
         self.assertNotIn("grid-template-columns", meter)
         meters = self.rule(css, ".meters")
-        self.assertRegex(meters, r"flex-wrap:\s*nowrap")
+        self.assertRegex(meters, r"display:\s*grid")
+        self.assertRegex(meters, r"grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)")   # 50 / 50 at any width
         self.assertRegex(meters, r"align-items:\s*stretch")   # the gauges take the ledger's height
         self.assertRegex(self.rule(css, ".right"), r"align-self:\s*flex-start")  # else the row stretches to the headline block
         dial = self.rule(css, ".meter svg")
@@ -241,10 +242,12 @@ class HeaderTest(unittest.TestCase):
         css = page_css()
         cell = self.rule(css, ".ledger > div")
         self.assertRegex(cell, r"padding:\s*8px 14px")
-        self.assertRegex(cell, r"min-width:\s*120px")
         self.assertNotIn("align-content", cell)           # the cells are no longer padded out to the gauges' height
-        self.assertRegex(self.rule(css, ".ledger"), r"grid-template-columns:\s*repeat\(3, auto\)")
+        self.assertRegex(self.rule(css, ".ledger"), r"grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)")   # equal thirds at any width
         self.assertRegex(self.rule(css, ".ledger .v"), r"font:\s*400 26px/1")
+        spark = self.rule(css, ".ledger svg")              # fills its cell without sizing it, else it widens every third
+        self.assertRegex(spark, r"width:\s*0")
+        self.assertRegex(spark, r"min-width:\s*100%")
 
     def test_the_60_percent_line_is_back_with_its_flag(self):
         svg = run_page("return meter(...%s)" % json.dumps(self.METER))
@@ -260,21 +263,42 @@ class HeaderTest(unittest.TestCase):
             self.assertIn(want, flag.group(1))
         self.assertEqual(svg.count("<text"), 1)           # the dial shows no number of its own
 
-    def test_up_to_1280px_the_row_drops_under_the_headline_and_fills_it(self):
-        css = self.media("max-width: 1280px")
-        self.assertRegex(self.rule(css, ".right"), r"flex:\s*1 1 100%")
-        for sel in (".meters", ".ledger"):
+    def test_the_row_fills_the_width_the_moment_it_wraps_under_the_headline(self):
+        css = page_css()
+        # No fixed width decides it. A zero-size spacer between the headline and the row soaks up the free space while they share
+        # a line, so the row keeps its natural size; once the row wraps it is alone on its line and its flex-grow fills it.
+        self.assertNotIn("1280px", css)
+        self.assertNotIn("1 1 400px", css)
+        spacer = self.rule(css, ".stage-top::after")
+        self.assertRegex(spacer, r'content:\s*""')
+        self.assertRegex(spacer, r"order:\s*1")
+        self.assertRegex(spacer, r"flex:\s*1000 1 0")
+        right = self.rule(css, ".right")
+        self.assertRegex(right, r"order:\s*2")
+        self.assertRegex(right, r"flex:\s*1 1 auto")
+        self.assertNotIn("100%", right)                    # never forced to a full row by a width
+        self.assertRegex(right, r"min-width:\s*0")
+        for sel in (".meters", ".ledger"):               # both blocks share what the row gains, and may shrink below their natural size
             body = self.rule(css, sel)
-            self.assertRegex(body, r"flex:\s*1 1 400px")
+            self.assertRegex(body, r"flex:\s*1 1 auto")
             self.assertRegex(body, r"min-width:\s*0")
-        self.assertRegex(self.rule(css, ".meters"), r"display:\s*grid[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)")
-        self.assertRegex(self.rule(css, ".ledger"), r"grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)")
         self.assertRegex(self.rule(css, ".ledger > div"), r"min-width:\s*0")
 
     def test_gauges_alone_on_a_row_grow_their_dial(self):
-        css = self.media("max-width: 880px")
+        # 900, not 880: the 1.5px stage border snaps to 1px at 1x density, which moved the 880 edge by a pixel
+        css = self.media("max-width: 900px")
         self.assertRegex(self.rule(css, ".meter"), r"gap:\s*14px")
         self.assertRegex(self.rule(css, ".meter svg"), r"flex-basis:\s*124px[^}]*width:\s*124px")
+        self.assertNotIn("880px", page_css())
+
+    def test_on_narrow_phones_the_dial_sits_above_its_readings_in_each_half(self):
+        # Side by side the dial would fall under ~56px just below 410px; stacked it takes the card's width, capped at 124px.
+        css = self.media("max-width: 410px")
+        self.assertRegex(self.rule(css, ".meter"), r"flex-direction:\s*column")
+        dial = self.rule(css, ".meter svg")
+        for want in (r"flex:\s*none", r"width:\s*100%", r"max-width:\s*124px"):
+            self.assertRegex(dial, want)
+        self.assertNotRegex(css, r"grid-template-columns")   # still two gauges across: 50 / 50 holds down to 320px
 
     def test_phone_sizes_from_520px(self):
         css = self.media("max-width: 520px")

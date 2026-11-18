@@ -43,6 +43,10 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .stage { position: relative; border-radius: 16px; border: 1.5px solid rgba(228,176,74,.35); overflow: hidden;
   background: radial-gradient(700px 300px at 70% 40%, rgba(255,170,60,.12), transparent 70%), linear-gradient(180deg, #1A0F09, #0E0805); }
 .stage-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; padding: 14px 18px 4px; }
+/* A zero-size spacer between the headline and the header row (order 1; the row is order 2). While the two share a line it soaks
+   up the free space, so the row keeps its natural size beside the headline. The moment the row no longer fits it wraps, is alone
+   on its line, and its flex-grow takes the whole row: the switch follows the content, not a fixed width. */
+.stage-top::after { content: ""; order: 1; flex: 1000 1 0; min-width: 0; }
 .tags { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .tag { font: 500 12px/1 var(--f-mono); padding: 6px 11px; border: 1.5px solid var(--claude); border-radius: 8px; color: var(--claude); }
 .tag.gpt { border-color: var(--gpt); color: var(--gpt); }
@@ -50,10 +54,11 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .headline { margin: 12px 0 4px; font: 400 clamp(26px, 3.4vw, 40px)/1.02 var(--f-display); letter-spacing: -.01em; text-wrap: balance; }
 .headline em { color: var(--lamp); font-style: italic; }
 .sub { color: var(--muted); font-size: 15px; max-width: 64ch; margin: 0; }
-/* The header row. Beside the headline (page wider than 1280px) the gauges stretch to the ledger's 1.1.0 height; under it
-   the row fills the width: gauges 50 / 50, ledger in equal thirds. */
-.right { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; justify-content: flex-end; align-self: flex-start; }
-.meters { display: flex; gap: 10px; align-items: stretch; flex-wrap: nowrap; }
+/* The header row: gauges 50 / 50, ledger in equal thirds. Beside the headline it has its natural size and the gauges stretch to
+   the ledger's 1.1.0 height; wrapped under the headline it fills the row. The two blocks share the growth and sit on one row
+   while they fit, else each takes a row of its own. */
+.right { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; justify-content: flex-end; align-self: flex-start; order: 2; flex: 1 1 auto; min-width: 0; }
+.meters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: stretch; flex: 1 1 auto; min-width: 0; }
 .meter { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
 .meter svg { flex: 0 1 104px; min-width: 0; width: 104px; height: auto; aspect-ratio: 132 / 76; display: block; }
 .txt { display: grid; gap: 2px; justify-items: start; flex: none; }
@@ -65,22 +70,15 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .rd .sw { align-self: center; width: 11px; height: 2px; border-radius: 1px; background: var(--c); }
 .rd.wkr .sw { height: 2.4px; opacity: .5; }
 .rd.na { white-space: normal; max-width: 96px; }   /* the hint for an unreadable account wraps instead of widening the gauge */
-.ledger { display: grid; grid-template-columns: repeat(3, auto); gap: 0; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
-.ledger > div { padding: 8px 14px; display: grid; gap: 4px; border-left: 1.5px solid var(--line); min-width: 120px; }
+.ledger { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); flex: 1 1 auto; min-width: 0; }
+.ledger > div { padding: 8px 14px; display: grid; gap: 4px; border-left: 1.5px solid var(--line); min-width: 0; }
 .ledger > div:first-child { border-left: 0; }
 .ledger .v { font: 400 26px/1 var(--f-display); font-variant-numeric: tabular-nums; }
 .ledger .v small { font: 500 12px var(--f-mono); color: var(--muted); margin-left: 3px; }
-.ledger svg { width: 100%; height: 18px; display: block; }
-/* page 1280px and under: the row drops under the headline and fills it. 400px bases sit side by side while the row is 810px
-   or wider (page 881px+), else each takes a full row. */
-@media (max-width: 1280px) {
-  .right { flex: 1 1 100%; }
-  .meters { flex: 1 1 400px; min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .ledger { flex: 1 1 400px; min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .ledger > div { min-width: 0; }
-}
-/* page 880px and under: the gauges are alone on a row, so the dial may grow */
-@media (max-width: 880px) {
+.ledger svg { width: 0; min-width: 100%; height: 18px; display: block; }   /* fills its cell without sizing it: equal thirds stay the 1.1.0 width */
+/* page 900px and under: the gauges are alone on a row (with the bigger dial the row would need more than the page gives), so
+   the dial may grow. Round number with room to spare: a 1.5px border snaps to 1px at 1x density, which moves an exact edge by a pixel. */
+@media (max-width: 900px) {
   .meter { gap: 14px; }
   .meter svg { flex-basis: 124px; width: 124px; }
 }
@@ -94,6 +92,12 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   .ledger .v { font-size: 22px; }
   .ledger .v small { font-size: 11px; }
   .ledger .label, .ledger .mix { font-size: 10px; }
+}
+/* page 410px and under: side by side the dial would fall under ~56px, so each half-width card stacks the dial above its
+   readings; the dial takes the card's width, up to 124px. Still two gauges across, 50 / 50. */
+@media (max-width: 410px) {
+  .meter { flex-direction: column; gap: 4px; }
+  .meter svg { flex: none; width: 100%; max-width: 124px; }
 }
 .portrait .play { transform-box: fill-box; transform-origin: 50% 100%; animation: play 2.4s ease-in-out infinite; }
 .patina { filter: hue-rotate(118deg) saturate(.55) brightness(1.02); }
