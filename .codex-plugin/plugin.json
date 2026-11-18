@@ -1,6 +1,6 @@
 {
   "name": "maestro",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Run coding agents in parallel without collisions: plans that say who owns which file, parallel builds with reviews, and chief, an orchestrator that routes work across Claude and Codex.",
   "author": {
     "name": "Vagif Gozal",

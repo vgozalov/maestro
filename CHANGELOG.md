@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.2 (2026-11-18)
+
+### Chief: resumed runs and steadier gauges
+
+- Fixed: activity is timed from a chat's last message, not from the transcript's modification time, so metadata written when a session stops no longer keeps an abandoned run "running" and never quiet. Any unarchived run can be archived from the dashboard; the button shows the working count when agents are live, and an archived run that is still working keeps counting its spend. `archive --done` now refuses instead of also archiving every finished run.
+- Fixed: a run resumed in a new session comes back from the archive and follows that session: the chief row, cache badge, status, chat link and "Open chat". A run you archive while it works stays archived; only a real resume (the previous phase was done or paused, or another session became current) brings it back.
+- Fixed: `run.json` keeps every session that drove a run in an ordered `sessions` list, the newest last. The summary and totals price each session, and a resumed chat that starts as a copy of the old one is counted once. A transcript counts as the chief's when it ran `chief-run.py phase`, not only `start`.
+- Fixed: "Open chat" shows only on the current chief session. Older sessions stay as `chief-<session id>` rows, and with the newest transcript missing it refuses instead of resuming an older chat.
+- Fixed: the gauge dial keeps a steady size on phones, with no jump around 410px: the gauges stack from 500px at the dial's own 104px, and a "Claude · blocked" title wraps instead of squeezing the dial.
+- Fixed: an account with a week reading but no 5-hour reading is no longer labelled "no reading", and a blocked account with no reading says "Claude: blocked, no reading".
+- Fixed: the burn rate's "/ h" stays on its figure's line, down to 320px.
+- `DASHBOARD_VERSION` is 6: a running dashboard from 1.2.1 is replaced.
+
 ## 1.2.1 (2026-11-18)
 
 ### Chief: dashboard restyle
