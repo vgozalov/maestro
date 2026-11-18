@@ -102,24 +102,28 @@ class LayoutTest(unittest.TestCase):
     def test_the_kit_runs_the_page(self):
         self.assertEqual(run_page("return money(1.5)"), "$1.50")
 
-    def test_cards_and_columns_never_pass_360px(self):
+    def test_cards_and_columns_cap_at_650px(self):
         css = page_css()
-        self.assertRegex(css, r"\.card\s*\{[^}]*max-width:\s*360px")
-        self.assertRegex(css, r"\.col\s*\{[^}]*max-width:\s*360px")
-        self.assertRegex(css, r"\.grid-archived\s*\{[^}]*minmax\(260px,\s*360px\)")
+        self.assertRegex(css, r"\.col\s*\{[^}]*max-width:\s*650px")
+        self.assertRegex(css, r"\.card\s*\{[^}]*max-width:\s*650px")
+        self.assertRegex(css, r"\.grid-archived\s*\{[^}]*repeat\(auto-fill,\s*minmax\(min\(260px,\s*100%\),\s*1fr\)\)")
+        self.assertNotIn("360px", css)
 
     def test_there_is_no_page_wide_cap(self):
         css = page_css()
         self.assertNotIn("1600px", css)
         self.assertNotRegex(css, r"\.hall\s*\{[^}]*max-width")  # the stage's hall is a backdrop, not a cap
 
-    def test_the_programme_scrolls_instead_of_squeezing_the_cards(self):
+    def test_the_programme_wraps_and_never_scrolls(self):
         css = page_css()
-        self.assertRegex(css, r"\.prog\s*\{[^}]*overflow-x:\s*auto")
-        self.assertRegex(css, r"\.col\s*\{[^}]*min-width:\s*260px")
-        self.assertNotRegex(css, r"\.prog\s*\{[^}]*flex-wrap:\s*wrap")
+        self.assertRegex(css, r"\.prog\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap[^}]*gap:\s*10px")
+        self.assertRegex(css, r"\.col\s*\{[^}]*flex:\s*1 1 260px[^}]*min-width:\s*0[^}]*max-width:\s*650px")
+        self.assertRegex(css, r"\.col\.rail\s*\{[^}]*flex:\s*0 0 34px")
+        prog = css.split("/* programme */")[1].split("/* the score */")[0]
+        for banned in ("overflow-x", "scroll-snap", "@container", "var(--n)", "var(--a)", "var(--b)"):
+            self.assertNotIn(banned, prog)
         small = css[css.index("@media (max-width: 1100px)"):css.index("@media (max-width: 620px)")]
-        self.assertRegex(small, r"\.col\s*\{[^}]*flex:\s*0 0 clamp\(260px")
+        self.assertNotRegex(small, r"\.(prog|col|cards)\b")
 
     def test_empty_columns_keep_their_vertical_title(self):
         css = page_css()
@@ -490,24 +494,16 @@ ROBOTS = PAGE.parent / "robots.svg"
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
 class BoardColumnsTest(unittest.TestCase):
-    def test_column_sizing_by_card_count(self):
-        self.assertEqual(run_page("return [1, 2, 3, 4, 5, 9].map((n) => { const v = colVars(n); return [v.b, v.a] })"),
-                         [[1, 1], [1, 2], [1, 3], [2, 2], [3, 3], [3, 3]])
-
-    def test_a_busy_column_carries_its_vars_and_a_card_grid(self):
+    def test_a_busy_column_stacks_its_cards(self):
+        css, page = page_css(), PAGE.read_text()
+        self.assertRegex(css, r"\.cards\s*\{\s*display:\s*grid;\s*gap:\s*10px;?\s*\}")
+        self.assertNotIn("prog-wrap", page)
+        self.assertEqual(run_page("return typeof colVars"), "undefined")
         runs = [sample_run(key=f"k{n}@x", id=f"k{n}", phase="implement") for n in range(4)]
         html = run_page(f"active = {json.dumps(sample_board(runs))}; renderProgramme(); return $('prog').innerHTML")
-        self.assertIn('style="--n:4;--b:2;--a:2"', html)
+        self.assertNotIn("--n:", html)
         self.assertEqual(html.count('<div class="cards">'), 1)
-        self.assertIn('class="col rail"', html)  # empty columns are still rails
-
-    def test_the_wide_board_rules_live_in_a_container_query(self):
-        css = page_css()
-        self.assertRegex(css, r"\.prog-wrap\s*\{[^}]*container:\s*board\s*/\s*inline-size")
-        wide = css[css.index("@container board (min-width: 900px)"):]
-        self.assertIn("repeat(auto-fill, minmax(260px, 1fr))", wide)
-        self.assertIn("calc(var(--a) * 360px + (var(--a) - 1) * 10px)", wide)
-        self.assertIn('class="prog-wrap"', PAGE.read_text())
+        self.assertIn('class="col rail"', html)
 
 
 def agent(id, role, status="running", provider="claude", model="claude-sonnet-5-5", kind=None):
