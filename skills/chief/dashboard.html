@@ -1054,6 +1054,28 @@ const shellQuote = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'"
 const SESSION_ID = /^[A-Za-z0-9-]{1,80}$/  // the server accepts the same ids (chief-run.py SESSION_ID)
 const resumeCommand = (run, sessionId) => typeof sessionId === 'string' && SESSION_ID.test(sessionId)
   ? `cd ${shellQuote(run.cwd || run.repo)} && claude --resume ${sessionId}` : null
+const OPEN_CHAT_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,79}$/  // the ids POST /open-chat accepts (chief-run.py); a leading dash would read as a flag
+const CHAT_LIVE_S = 900  // chief-run.py STALE_SECONDS: a chat whose transcript changed within this is treated as open elsewhere
+let openingChat = null  // the run key whose open-chat request is in flight
+function openChatControl(r, chief, nowS = Date.now() / 1000) {
+  if (!(chief && typeof chief.session_id === 'string' && OPEN_CHAT_ID.test(chief.session_id))) return ''
+  if (chief.status === 'running' || nowS - (chief.active || 0) < CHAT_LIVE_S) {
+    return `<span class="mix" title="This chief chat was active in the last 15 minutes. Resuming it in Terminal too would fork it.">chat may be open elsewhere</span>`
+  }
+  return `<button class="chip" type="button" data-open-chat="${esc(r.key)}"${openingChat === r.key ? ' disabled' : ''} title="Resume this chief chat in Terminal">open chat</button>`
+}
+async function openChat(button) {
+  if (openingChat) return
+  openingChat = button.dataset.openChat
+  button.disabled = true
+  try {
+    const res = await fetch('/open-chat', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Chief-Dashboard': '1' }, body: JSON.stringify({ key: button.dataset.openChat }) })
+    $('status').textContent = res.ok ? 'Opened the chief chat in Terminal.'
+      : res.status === 409 ? 'This chief chat was active in the last 15 minutes, so it may be open elsewhere; it was not opened again.'
+      : 'Open chat failed: ' + (await res.text())
+  } catch (e) { $('status').textContent = 'Open chat failed: ' + (e && e.message || e)  // the server stopped or the request never left
+  } finally { openingChat = null; button.disabled = false }
+}
 function sessionBadge(r) {
   if (!r.session_id) return ''
   const n = sessionTotals[r.session_id] || 1
@@ -1217,8 +1239,7 @@ function renderScore({ force = false } = {}) {
         if (!command) return ''  // a session id that is not a plain token gets neither the command nor the link
         return `<div class="links"><code>${esc(command)}</code>
           <button class="chip" type="button" data-copy="${esc(command)}">copy resume command</button>
-          <a class="chip" href="${esc('vscode://anthropic.claude-code/open?session=' + encodeURIComponent(sel.session_id))}">open in VS Code</a>
-          <span class="mix">opens if this repo is the folder open in VS Code</span></div>`
+          ${openChatControl(r, sel)}</div>`
       })() : ''}
       ${sel.kind !== 'chief' && lit && sel.agent_id ? `<div class="mix">steer it from the chief session: SendMessage to ${esc(sel.agent_id)}</div>` : ''}
       ${sel.kind !== 'chief' ? `<div><div class="label" style="margin-bottom:6px">reply</div><pre class="reply">${esc(sel.report || (lit ? 'No reply yet. The agent is still playing.' : 'No reply.'))}</pre></div>` : ''}`
@@ -1285,6 +1306,8 @@ document.addEventListener('click', async (e) => {
     confirmDone = false
     await archive(visible().filter((r) => r.phase === 'done').map((r) => r.key), false); return
   }
+  const chat = t.closest('[data-open-chat]')
+  if (chat) { await openChat(chat); return }
   const arch = t.closest('[data-archive]')
   if (arch) { const key = openKey; closeScore(); await archive([key], arch.dataset.archive === 'restore'); return }
   if (t.closest('#archived-toggle')) { view = view === 'archived' ? 'active' : 'archived'; filter = null; await poll(); renderAll(); return }

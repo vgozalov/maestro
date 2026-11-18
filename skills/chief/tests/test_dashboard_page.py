@@ -410,8 +410,10 @@ class SessionTest(unittest.TestCase):
             self.assertNotIn(banned, html)
 
     def test_the_chief_row_links_to_its_chat(self):
-        html = self.score("chief", cwd="/x/My repo")
-        self.assertIn("vscode://anthropic.claude-code/open?session=1a2b3c4d-aaaa", html)
+        board = sample_board([sample_run(agents=[{**self.CHIEF, "status": "stopped"}, self.WORKER], cwd="/x/My repo")])
+        html = run_page(f"active = {json.dumps(board)}; openKey = 'r1@abc'; openAgent = 'chief'; renderScore({{ force: true }}); return $('score').innerHTML")
+        self.assertNotIn("vscode://", html)
+        self.assertIn('data-open-chat="r1@abc"', html)
         self.assertIn("claude --resume 1a2b3c4d-aaaa", html)
         self.assertIn('data-transcript="chief"', html)
 
@@ -424,6 +426,63 @@ class SessionTest(unittest.TestCase):
     def test_the_transcript_is_fetched_with_the_header(self):
         sent = run_page("loadTranscript('r1@abc', 'claude-w1'); return __fetches.filter(([u]) => u.startsWith('/transcript')).map(([u, i]) => [u, i.headers['X-Chief-Dashboard']])")
         self.assertEqual(sent, [["/transcript?run=r1%40abc&agent=claude-w1", "1"]])
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class OpenChatPageTest(unittest.TestCase):
+    NOW = 1_800_000_000
+    CHIEF = {**SessionTest.CHIEF, "status": "stopped", "active": NOW - 3600}
+
+    def control(self, chief=None, **run):
+        r = sample_run(**{"session_id": "1a2b3c4d-aaaa", **run})
+        return run_page(f"return openChatControl({json.dumps(r)}, {json.dumps(chief or self.CHIEF)}, {self.NOW})")
+
+    def test_a_quiet_chief_gets_the_button(self):
+        html = self.control()
+        self.assertIn('data-open-chat="r1@abc"', html)
+        self.assertIn(">open chat</button>", html)
+
+    def test_a_recent_chat_gets_a_hint_whatever_its_status(self):
+        for status in ("running", "stopped", "done"):
+            html = self.control({**self.CHIEF, "status": status, "active": self.NOW - 60})
+            self.assertIn("chat may be open elsewhere", html)
+            self.assertNotIn("data-open-chat", html)
+
+    def test_no_openable_chat_no_control(self):
+        self.assertEqual(self.control({**self.CHIEF, "session_id": None}), "")
+        for bad in ("rm -rf ~", "-abcd1234"):
+            self.assertEqual(self.control({**self.CHIEF, "session_id": bad}), "")
+
+    def test_the_chief_panel_carries_it_and_no_vscode_link(self):
+        board = sample_board([sample_run(session_id="1a2b3c4d-aaaa", agents=[self.CHIEF])])
+        html = run_page(f"Date.now = () => {self.NOW * 1000}; active = {json.dumps(board)}; openKey = 'r1@abc'; openAgent = 'chief'; renderScore({{ force: true }}); return $('score').innerHTML")
+        side = html.split('class="s-side"')[1]
+        self.assertIn('data-open-chat="r1@abc"', side)
+        self.assertIn("copy resume command", side)
+        self.assertNotIn("vscode://", html)
+        self.assertNotIn("data-open-chat", html.split('class="s-side"')[0])   # not in the header
+
+    def test_it_posts_only_the_key_and_disables_the_button_meanwhile(self):
+        out = run_page("const b = { dataset: { openChat: 'r1@abc' }, disabled: false, textContent: 'open chat' }; openChat(b); return [__fetches.filter(([u]) => u === '/open-chat'), b.disabled]")
+        self.assertEqual(out[0], [["/open-chat", {"method": "POST", "headers": {"Content-Type": "application/json", "X-Chief-Dashboard": "1"}, "body": '{"key":"r1@abc"}'}]])
+        self.assertTrue(out[1])
+
+    def test_a_redraw_during_the_request_keeps_the_button_disabled(self):
+        html = run_page(f"const b = {{ dataset: {{ openChat: 'r1@abc' }}, disabled: false }}; openChat(b); return openChatControl({json.dumps(sample_run(session_id='1a2b3c4d-aaaa'))}, {json.dumps(self.CHIEF)}, {self.NOW})")
+        self.assertRegex(html, r'<button[^>]*data-open-chat="r1@abc"[^>]*disabled')
+
+    def test_a_409_says_the_chat_may_be_open_elsewhere_and_re_enables(self):
+        out = run_page("fetch = async () => ({ ok: false, status: 409, text: async () => '{\"error\":\"live\"}' }); const b = { dataset: { openChat: 'r1@abc' }, disabled: false }; await openChat(b); return [$('status').textContent, b.disabled, openingChat]")
+        self.assertIn("may be open elsewhere", out[0])
+        self.assertFalse(out[1])
+        self.assertIsNone(out[2])
+
+    def test_a_server_error_or_a_stopped_server_is_shown_and_re_enables(self):
+        out = run_page("fetch = async () => ({ ok: false, status: 500, text: async () => '{\"error\":\"OSError: boom\"}' }); const b = { dataset: { openChat: 'r1@abc' }, disabled: false }; await openChat(b); const first = $('status').textContent; fetch = async () => { throw new TypeError('Failed to fetch') }; await openChat(b); return [first, $('status').textContent, b.disabled, openingChat]")
+        self.assertEqual(out[0], 'Open chat failed: {"error":"OSError: boom"}')
+        self.assertEqual(out[1], "Open chat failed: Failed to fetch")
+        self.assertFalse(out[2])
+        self.assertIsNone(out[3])
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
