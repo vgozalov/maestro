@@ -4,6 +4,7 @@ The page is one self-contained file, so these tests read its <style> text and ru
 tiny fake DOM (PRELUDE). Later page tasks reuse page_css, run_page, sample_run and sample_board.
 """
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -63,8 +64,10 @@ def page_script() -> str:
     return scripts[-1]
 
 
-def run_page(snippet: str, timeout: float = 20) -> Any:
-    """Run the page's script under Node with PRELUDE, then SNIPPET; return its JSON result."""
+def run_page(snippet: str, timeout: float = 20, before: str = "") -> Any:
+    """Run the page's script under Node with PRELUDE, then SNIPPET; return its JSON result.
+
+    BEFORE runs between PRELUDE and the page's script: for what the page reads while it loads (storage, timers)."""
     tail = (
         ";(async () => { " + snippet + " })()"
         ".then((v) => console.log(JSON.stringify(v === undefined ? null : v)))"
@@ -72,7 +75,7 @@ def run_page(snippet: str, timeout: float = 20) -> Any:
     )
     with tempfile.TemporaryDirectory() as tmp:
         js = Path(tmp) / "page.js"
-        js.write_text(PRELUDE + "\n" + page_script() + "\n" + tail)
+        js.write_text(PRELUDE + "\n" + before + "\n" + page_script() + "\n" + tail)
         proc = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
         raise AssertionError(proc.stderr)
@@ -102,24 +105,39 @@ class LayoutTest(unittest.TestCase):
     def test_the_kit_runs_the_page(self):
         self.assertEqual(run_page("return money(1.5)"), "$1.50")
 
-    def test_cards_and_columns_never_pass_360px(self):
+    def test_cards_and_columns_cap_at_650px(self):
         css = page_css()
-        self.assertRegex(css, r"\.card\s*\{[^}]*max-width:\s*360px")
-        self.assertRegex(css, r"\.col\s*\{[^}]*max-width:\s*360px")
-        self.assertRegex(css, r"\.grid-archived\s*\{[^}]*minmax\(260px,\s*360px\)")
+        self.assertRegex(css, r"\.col\s*\{[^}]*max-width:\s*650px")
+        self.assertRegex(css, r"\.card\s*\{[^}]*max-width:\s*650px")
+        self.assertRegex(css, r"\.grid-archived\s*\{[^}]*repeat\(auto-fill,\s*minmax\(min\(260px,\s*100%\),\s*1fr\)\)")
+        self.assertNotIn("360px", css)
 
     def test_there_is_no_page_wide_cap(self):
         css = page_css()
         self.assertNotIn("1600px", css)
         self.assertNotRegex(css, r"\.hall\s*\{[^}]*max-width")  # the stage's hall is a backdrop, not a cap
 
-    def test_the_programme_scrolls_instead_of_squeezing_the_cards(self):
+    def test_the_programme_wraps_and_never_scrolls(self):
         css = page_css()
-        self.assertRegex(css, r"\.prog\s*\{[^}]*overflow-x:\s*auto")
-        self.assertRegex(css, r"\.col\s*\{[^}]*min-width:\s*260px")
-        self.assertNotRegex(css, r"\.prog\s*\{[^}]*flex-wrap:\s*wrap")
+        self.assertRegex(css, r"\.prog\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap[^}]*gap:\s*10px")
+        self.assertRegex(css, r"\.col\s*\{[^}]*flex:\s*1 1 260px[^}]*min-width:\s*0[^}]*max-width:\s*650px")
+        self.assertRegex(css, r"\.col\.rail\s*\{[^}]*flex:\s*0 0 34px")
+        prog = css.split("/* programme */")[1].split("/* the score */")[0]
+        for banned in ("overflow-x", "scroll-snap", "@container", "var(--n)", "var(--a)", "var(--b)"):
+            self.assertNotIn(banned, prog)
         small = css[css.index("@media (max-width: 1100px)"):css.index("@media (max-width: 620px)")]
-        self.assertRegex(small, r"\.col\s*\{[^}]*flex:\s*0 0 clamp\(260px")
+        self.assertNotRegex(small, r"\.(prog|col|cards)\b")
+
+    def test_the_git_notice_wraps_inside_a_narrow_window(self):
+        css = page_css()
+        notice = re.search(r"\.notice\s*\{([^}]*)\}", css).group(1)
+        self.assertRegex(notice, r"flex-wrap:\s*wrap")
+        self.assertRegex(notice, r"min-width:\s*0")
+        self.assertRegex(css, r"\.notice ul\s*\{[^}]*min-width:\s*0")
+        self.assertRegex(css, r"\.notice li\s*\{[^}]*overflow-wrap:\s*anywhere")
+        label = re.search(r"\.notice b\s*\{([^}]*)\}", css).group(1)
+        self.assertNotIn("nowrap", label)                       # a long repo or branch name wrapped nowhere and scrolled the page sideways
+        self.assertRegex(label, r"overflow-wrap:\s*anywhere")
 
     def test_empty_columns_keep_their_vertical_title(self):
         css = page_css()
@@ -171,10 +189,198 @@ class HeaderTest(unittest.TestCase):
         self.assertLess(html.index('id="meters"'), html.index('id="ledger"'))
         self.assertRegex(page_css(), r"\.right\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap")
 
-    def test_the_header_is_shorter(self):
+    METER = ("Claude", {"5h": 11, "week": 29}, "#D4703C")
+
+    @staticmethod
+    def rule(css, sel):
+        m = re.search(r"(?<![\w-])" + re.escape(sel) + r"\s*\{([^}]*)\}", css)
+        assert m, f"no rule for {sel}"
+        return m.group(1)
+
+    @staticmethod
+    def media(query):
+        """The body of the page's `@media (<query>) { ... }` block, brace-matched."""
         css = page_css()
-        self.assertRegex(css, r"\.meter svg\s*\{[^}]*width:\s*100px[^}]*height:\s*58px")
+        start = css.index("@media (" + query + ")")
+        open_at = css.index("{", start)
+        depth = 0
+        for i in range(open_at, len(css)):
+            depth += {"{": 1, "}": -1}.get(css[i], 0)
+            if depth == 0:
+                return css[open_at + 1:i]
+        raise AssertionError("unbalanced @media " + query)
+
+    def test_a_gauge_is_a_dial_beside_its_readings_as_tall_as_the_ledger(self):
+        css = page_css()
+        meter = self.rule(css, ".meter")
+        for want in (r"display:\s*flex", r"align-items:\s*center", r"justify-content:\s*center", r"gap:\s*8px", r"padding:\s*8px 10px"):
+            self.assertRegex(meter, want)
+        self.assertNotIn("grid-template-columns", meter)
+        meters = self.rule(css, ".meters")
+        self.assertRegex(meters, r"display:\s*grid")
+        self.assertRegex(meters, r"grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)")   # 50 / 50 at any width
+        self.assertRegex(meters, r"align-items:\s*stretch")   # the gauges take the ledger's height
+        self.assertRegex(self.rule(css, ".right"), r"align-self:\s*flex-start")  # else the row stretches to the headline block
+        dial = self.rule(css, ".meter svg")
+        for want in (r"flex:\s*0 1 104px", r"min-width:\s*0", r"width:\s*104px", r"height:\s*auto", r"aspect-ratio:\s*132\s*/\s*76"):
+            self.assertRegex(dial, want)
+        self.assertNotRegex(dial, r"height:\s*76px")
         self.assertRegex(css, r"\.headline\s*\{[^}]*clamp\(26px,\s*3\.4vw,\s*40px\)")
+        svg = run_page("return meter(...%s)" % json.dumps(self.METER))
+        self.assertIn('viewBox="0 0 132 76"', svg)    # the drawing is unchanged; only its box is
+
+    def test_each_reading_has_a_swatch_keyed_to_its_needle(self):
+        css = page_css()
+        self.assertRegex(self.rule(css, ".rd"), r"display:\s*flex[^}]*align-items:\s*baseline[^}]*gap:\s*5px")
+        self.assertRegex(self.rule(css, ".rd b"), r"font:\s*400 20px/1\.05 var\(--f-display\)")
+        sw = self.rule(css, ".rd .sw")
+        for want in (r"width:\s*11px", r"height:\s*2px", r"background:\s*var\(--c\)"):
+            self.assertRegex(sw, want)
+        wk = self.rule(css, ".rd.wkr .sw")                # the week needle is drawn faint and a little thicker
+        self.assertRegex(wk, r"height:\s*2\.4px")
+        self.assertRegex(wk, r"opacity:\s*\.5")
+
+    def test_the_ledger_keeps_its_1_1_0_size_and_padding(self):
+        css = page_css()
+        cell = self.rule(css, ".ledger > div")
+        self.assertRegex(cell, r"padding:\s*8px 14px")
+        self.assertNotIn("align-content", cell)           # the cells are no longer padded out to the gauges' height
+        self.assertRegex(self.rule(css, ".ledger"), r"grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)")   # equal thirds at any width
+        self.assertRegex(self.rule(css, ".ledger .v"), r"font:\s*400 26px/1")
+        spark = self.rule(css, ".ledger svg")              # fills its cell without sizing it, else it widens every third
+        self.assertRegex(spark, r"width:\s*0")
+        self.assertRegex(spark, r"min-width:\s*100%")
+
+    def test_the_60_percent_line_is_back_with_its_flag(self):
+        svg = run_page("return meter(...%s)" % json.dumps(self.METER))
+        line = re.search(r'<path d="M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)" stroke="#FFC45E" stroke-width="2\.6"/>', svg)
+        self.assertTrue(line, "no 60% line of width 2.6")
+        x1, y1, x2, y2 = (float(n) for n in line.groups())
+        self.assertAlmostEqual(math.hypot(x1 - 66, y1 - 66), 57, places=2)   # R + 3
+        self.assertAlmostEqual(math.hypot(x2 - 66, y2 - 66), 40, places=2)   # R - 14
+        self.assertAlmostEqual(math.degrees(math.atan2(66 - y1, x1 - 66)), 72, places=2)   # 60% of the half circle
+        flag = re.search(r"<text ([^>]*)>60%</text>", svg)
+        self.assertTrue(flag, "no 60% flag")
+        for want in ('x="89"', 'y="14"', 'font-size="13"', 'font-weight="500"', 'fill="#FFC45E"', "IBM Plex Mono"):
+            self.assertIn(want, flag.group(1))
+        self.assertEqual(svg.count("<text"), 1)           # the dial shows no number of its own
+
+    def test_the_row_fills_the_width_the_moment_it_wraps_under_the_headline(self):
+        css = page_css()
+        # No fixed width decides it. The headline block soaks up the free space while it shares a line with the row, so the row
+        # keeps its natural size; once the row wraps it is alone on its line and its flex-grow fills it.
+        self.assertNotIn("1280px", css)
+        self.assertNotIn("1 1 400px", css)
+        self.assertRegex(self.rule(css, ".stage-top > :first-child"), r"flex:\s*1000 1 auto")
+        right = self.rule(css, ".right")
+        self.assertRegex(right, r"flex:\s*1 1 auto")
+        self.assertNotIn("100%", right)                    # never forced to a full row by a width
+        self.assertRegex(right, r"min-width:\s*0")
+        for sel in (".meters", ".ledger"):               # both blocks share what the row gains, and may shrink below their natural size
+            body = self.rule(css, sel)
+            self.assertRegex(body, r"flex:\s*1 1 auto")
+            self.assertRegex(body, r"min-width:\s*0")
+        self.assertRegex(self.rule(css, ".ledger > div"), r"min-width:\s*0")
+
+    def test_gauges_alone_on_a_row_grow_their_dial(self):
+        # 900, not 880: the 1.5px stage border snaps to 1px at 1x density, which moved the 880 edge by a pixel
+        css = self.media("max-width: 900px")
+        self.assertRegex(self.rule(css, ".meter"), r"gap:\s*14px")
+        self.assertRegex(self.rule(css, ".meter svg"), r"flex-basis:\s*124px[^}]*width:\s*124px")
+        self.assertNotIn("880px", page_css())
+
+    def test_on_narrow_phones_the_dial_sits_above_its_readings_in_each_half(self):
+        # Side by side the dial would fall under ~56px just below 410px; stacked it takes the card's width, capped at 124px.
+        css = self.media("max-width: 410px")
+        self.assertRegex(self.rule(css, ".meter"), r"flex-direction:\s*column")
+        dial = self.rule(css, ".meter svg")
+        for want in (r"flex:\s*none", r"width:\s*100%", r"max-width:\s*124px"):
+            self.assertRegex(dial, want)
+        self.assertNotRegex(css, r"grid-template-columns")   # still two gauges across: 50 / 50 holds down to 320px
+
+    def test_phone_sizes_from_520px(self):
+        css = self.media("max-width: 520px")
+        meter = self.rule(css, ".meter")
+        self.assertRegex(meter, r"gap:\s*6px")
+        self.assertRegex(meter, r"padding:\s*8px")
+        self.assertRegex(self.rule(css, ".ledger .label, .ledger .mix"), r"font-size:\s*10px")   # captions; the ledger's own sizes scale (test above)
+        self.assertRegex(self.rule(css, ".rd b"), r"font-size:\s*18px")
+
+    def test_the_ledger_scales_with_the_page_width_below_520px(self):
+        # At 320px each third is about 83px wide, and the faces differ a lot: "$12,345.67" is 3.4em wide in the bundled Instrument
+        # Serif but 5.0em in the Iowan Old Style a Mac falls back to when the file does not load. So below 520px the figures and the
+        # cell padding follow the page width (no fixed step to guess a face for): 15px figures and 4px padding at 320px, reaching the
+        # 22px and 10px of the 520px block by 470px and 480px. Three across stays; a caption that cannot fit wraps at its hyphen.
+        css = page_css()
+        phone = self.media("max-width: 520px")
+        self.assertRegex(self.rule(phone, ".ledger .v"), r"font-size:\s*clamp\(15px,\s*4\.7vw,\s*22px\)")
+        self.assertRegex(self.rule(phone, ".ledger > div"), r"padding:\s*8px clamp\(4px,\s*calc\(3\.75vw - 8px\),\s*10px\)")
+        self.assertRegex(self.rule(phone, ".ledger .v small"), r"font-size:\s*clamp\(10px,\s*3vw,\s*11px\)")   # the "/ h" unit
+        self.assertRegex(self.rule(phone, ".ledger .label, .ledger .mix"), r"font-size:\s*10px")   # captions are at their floor already
+        self.assertRegex(self.rule(css, ".ledger > div"), r"min-width:\s*0")
+        self.assertNotIn("@media (max-width: 380px)", css)                    # one fluid rule, not another step
+        self.assertNotRegex(phone, r"grid-template-columns")                  # no 2 + 1 split: the thirds stay equal
+        self.assertNotRegex(phone, r"white-space:\s*nowrap")                  # the caption may wrap
+        sizes = [float(n) for n in re.findall(r"\.ledger \.v\s*\{[^}]*?font(?:-size)?:\s*(?:clamp\()?(?:\d+ )?([\d.]+)px", css)]
+        self.assertEqual(len(sizes), 2)                                       # desktop 26px, and the 520px block's floor
+        self.assertGreaterEqual(min(sizes), 15)                               # the figures stay legible at every width
+
+    def test_the_header_row_is_one_gap_under_the_headline_at_every_width(self):
+        # A zero-size spacer between the headline and the row wrapped onto a line of its own once the headline filled the line
+        # (at 375px and under), which added a second 16px row gap. The headline block takes the free space beside the row
+        # instead, so there is nothing left to wrap alone: the gap is the one 16px row gap at every width.
+        css = page_css()
+        self.assertNotRegex(css, r"\.stage-top::(?:after|before)")
+        lead = self.rule(css, ".stage-top > :first-child")
+        self.assertRegex(lead, r"flex:\s*1000 1 auto")
+        right = self.rule(css, ".right")
+        self.assertRegex(right, r"flex:\s*1 1 auto")                         # 1 : 1000, so beside the headline the row keeps its natural size
+        self.assertNotRegex(right, r"order:")
+        self.assertRegex(self.rule(css, ".stage-top"), r"gap:\s*16px")
+
+    def test_the_ledger_never_falls_back_to_two_columns(self):
+        css = page_css()
+        self.assertNotIn(".ledger > div:nth-child(3)", css)   # the old 620px 2 + 1 split
+        self.assertNotRegex(css, r"\.meter svg\s*\{[^}]*(112px|66px)")
+        self.assertNotRegex(self.media("max-width: 1100px"), r"\.right")
+
+    def test_the_gauge_script_fills_both_readings(self):
+        html = run_page("return meter('ChatGPT', { '5h': 0, week: 90 }, '#74B9A7')")
+        self.assertIn('<b>0%</b><small>5 h</small>', html)     # 0 is a reading, not a missing one
+        self.assertIn('<b>90%</b><small>week</small>', html)
+        self.assertEqual(html.count('style="--c:#74B9A7"'), 2)  # both swatches carry the account colour
+        self.assertRegex(html, r'<span class="rd wkr"')
+        self.assertIn('aria-label="ChatGPT: 0% of the 5-hour window, 90% of the week; line at 60%"', html)
+        self.assertEqual(html.count('stroke-linecap="round"'), 2)   # both needles are drawn
+        self.assertIn('stroke-opacity=".5"', html)
+
+    def test_both_gauges_are_filled_from_the_board(self):
+        board = sample_board([sample_run()])
+        board["accounts"] = {"claude": {"5h": 11, "week": 29}, "chatgpt": {"5h": 0, "week": 90}}
+        html = run_page(f"active = {json.dumps(board)}; renderStage(); return $('meters').innerHTML")
+        self.assertEqual(html.count('class="meter"'), 2)
+        for want in ("<b>11%</b>", "<b>29%</b>", "<b>0%</b>", "<b>90%</b>", "Claude", "ChatGPT"):
+            self.assertIn(want, html)
+
+    def test_an_unreadable_account_draws_dashes_no_needles_and_the_hint(self):
+        for reading in ("undefined", "{ '5h': null, week: null }", "{}"):
+            html = run_page(f"return meter('Claude', {reading}, '#D4703C')")
+            self.assertIn('aria-label="no reading"', html)
+            self.assertIn("<b>—</b><small>5 h</small>", html)
+            self.assertIn("run the usage check", html)
+            self.assertNotIn('stroke-linecap="round"', html)    # no needle without a reading
+            for junk in ("NaN", "null", "undefined"):
+                self.assertNotIn(junk, html)
+            self.assertIn("60%", html)                           # the line and its flag stay
+        half = run_page("return meter('Claude', { '5h': 40, week: null }, '#D4703C')")
+        self.assertIn("<b>40%</b>", half)
+        self.assertIn("run the usage check", half)
+        self.assertEqual(half.count('stroke-linecap="round"'), 1)
+
+    def test_no_line_between_the_header_and_the_stages(self):
+        hall = re.search(r"\.hall\s*\{([^}]*)\}", page_css()).group(1)
+        self.assertNotIn("border", hall)
+        self.assertNotIn("background", hall)   # the stage's own gradient runs on, as in 1.1.0
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
@@ -388,8 +594,10 @@ class SessionTest(unittest.TestCase):
             self.assertNotIn(banned, html)
 
     def test_the_chief_row_links_to_its_chat(self):
-        html = self.score("chief", cwd="/x/My repo")
-        self.assertIn("vscode://anthropic.claude-code/open?session=1a2b3c4d-aaaa", html)
+        board = sample_board([sample_run(agents=[{**self.CHIEF, "status": "stopped"}, self.WORKER], cwd="/x/My repo")])
+        html = run_page(f"active = {json.dumps(board)}; openKey = 'r1@abc'; openAgent = 'chief'; renderScore({{ force: true }}); return $('score').innerHTML")
+        self.assertNotIn("vscode://", html)
+        self.assertIn('data-open-chat="r1@abc"', html)
         self.assertIn("claude --resume 1a2b3c4d-aaaa", html)
         self.assertIn('data-transcript="chief"', html)
 
@@ -402,6 +610,126 @@ class SessionTest(unittest.TestCase):
     def test_the_transcript_is_fetched_with_the_header(self):
         sent = run_page("loadTranscript('r1@abc', 'claude-w1'); return __fetches.filter(([u]) => u.startsWith('/transcript')).map(([u, i]) => [u, i.headers['X-Chief-Dashboard']])")
         self.assertEqual(sent, [["/transcript?run=r1%40abc&agent=claude-w1", "1"]])
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class OpenChatPageTest(unittest.TestCase):
+    NOW = 1_800_000_000
+    CHIEF = {**SessionTest.CHIEF, "status": "stopped", "active": NOW - 3600}
+
+    def control(self, chief=None, **run):
+        r = sample_run(**{"session_id": "1a2b3c4d-aaaa", **run})
+        return run_page(f"return openChatControl({json.dumps(r)}, {json.dumps(chief or self.CHIEF)}, {self.NOW})")
+
+    def test_a_quiet_chief_gets_the_button(self):
+        html = self.control()
+        self.assertIn('data-open-chat="r1@abc"', html)
+        self.assertIn(">open chat</button>", html)
+
+    def test_a_recent_chat_gets_a_hint_whatever_its_status(self):
+        for status in ("running", "stopped", "done"):
+            html = self.control({**self.CHIEF, "status": status, "active": self.NOW - 60})
+            self.assertIn("chat may be open elsewhere", html)
+            self.assertNotIn("data-open-chat", html)
+
+    def test_no_openable_chat_no_control(self):
+        self.assertEqual(self.control({**self.CHIEF, "session_id": None}), "")
+        for bad in ("rm -rf ~", "-abcd1234"):
+            self.assertEqual(self.control({**self.CHIEF, "session_id": bad}), "")
+
+    def test_the_chief_panel_carries_it_and_no_vscode_link(self):
+        board = sample_board([sample_run(session_id="1a2b3c4d-aaaa", agents=[self.CHIEF])])
+        html = run_page(f"Date.now = () => {self.NOW * 1000}; active = {json.dumps(board)}; openKey = 'r1@abc'; openAgent = 'chief'; renderScore({{ force: true }}); return $('score').innerHTML")
+        side = html.split('class="s-side"')[1]
+        self.assertIn('data-open-chat="r1@abc"', side)
+        self.assertIn("copy resume command", side)
+        self.assertNotIn("vscode://", html)
+        self.assertNotIn("data-open-chat", html.split('class="s-side"')[0])   # not in the header
+
+    def test_it_posts_only_the_key_and_disables_the_button_meanwhile(self):
+        out = run_page("const b = { dataset: { openChat: 'r1@abc' }, disabled: false, textContent: 'open chat' }; openChat(b); return [__fetches.filter(([u]) => u === '/open-chat'), b.disabled]")
+        self.assertEqual(out[0], [["/open-chat", {"method": "POST", "headers": {"Content-Type": "application/json", "X-Chief-Dashboard": "1"}, "body": '{"key":"r1@abc"}'}]])
+        self.assertTrue(out[1])
+
+    def test_a_redraw_during_the_request_keeps_the_button_disabled(self):
+        html = run_page(f"const b = {{ dataset: {{ openChat: 'r1@abc' }}, disabled: false }}; openChat(b); return openChatControl({json.dumps(sample_run(session_id='1a2b3c4d-aaaa'))}, {json.dumps(self.CHIEF)}, {self.NOW})")
+        self.assertRegex(html, r'<button[^>]*data-open-chat="r1@abc"[^>]*disabled')
+
+    def open_panel(self):
+        """JS that opens the chief panel of run r1@abc (its open-chat button drawn) and defines the clicked button B."""
+        board = sample_board([sample_run(session_id="1a2b3c4d-aaaa", agents=[self.CHIEF])])
+        return (f"Date.now = () => {self.NOW * 1000}; active = {json.dumps(board)}; openKey = 'r1@abc'; openAgent = 'chief'; "
+                "renderScore({ force: true }); const b = { dataset: { openChat: 'r1@abc' }, disabled: false }; ")
+
+    @staticmethod
+    def links(panel):
+        """The chief panel's .links area: the command, the buttons and the open-chat note."""
+        return panel.split('class="s-side"')[1].split('class="links"')[1].split("</div>")[0]
+
+    @staticmethod
+    def reply(status, body):
+        return f"fetch = async () => ({{ ok: {str(status == 200).lower()}, status: {status}, text: async () => {json.dumps(body)} }}); "
+
+    def test_a_409_shows_the_servers_error_in_the_panel_and_a_redraw_keeps_it(self):
+        out = run_page(self.open_panel() + self.reply(409, '{"error":"live <i>"}')
+                       + "await openChat(b); const after = $('score').innerHTML; renderScore({ force: true }); return [after, $('score').innerHTML, $('status').textContent, b.disabled, openingChat]")
+        for panel in out[:2]:
+            links = self.links(panel)
+            self.assertIn("may be open elsewhere", links)
+            self.assertIn("live &lt;i&gt;", links)     # the server's error, escaped
+            self.assertNotIn("<i>", links)
+        self.assertEqual(out[2], "")                    # nothing under the toolbar, which the modal covers
+        self.assertFalse(out[3])
+        self.assertIsNone(out[4])
+
+    def test_every_failure_shows_the_servers_error_beside_the_button(self):
+        for status, body, shown in ((404, '{"error":"run not found"}', "Open chat failed: run not found"),
+                                    (500, '{"error":"Terminal did not open: boom"}', "Open chat failed: Terminal did not open: boom"),
+                                    (501, '{"error":"Open chat needs macOS Terminal"}', "Open chat failed: Open chat needs macOS Terminal"),
+                                    (415, "plain words", "Open chat failed: plain words")):
+            with self.subTest(status=status):
+                links = self.links(run_page(self.open_panel() + self.reply(status, body) + "await openChat(b); renderScore({ force: true }); return $('score').innerHTML"))
+                self.assertIn(shown, links)
+                self.assertIn('data-open-chat="r1@abc"', links)
+
+    def test_a_stopped_server_and_a_success_are_shown_in_the_panel(self):
+        out = run_page(self.open_panel() + "fetch = async () => { throw new TypeError('Failed to fetch') }; await openChat(b); const down = $('score').innerHTML; "
+                       + self.reply(200, "{}") + "await openChat(b); return [down, $('score').innerHTML, $('status').textContent, openingChat]")
+        self.assertIn("Open chat failed: Failed to fetch", self.links(out[0]))
+        self.assertIn("Opened the chief chat in Terminal.", self.links(out[1]))
+        self.assertNotIn("Failed to fetch", out[1])    # the new attempt replaced the old note
+        self.assertEqual(out[2], "")
+        self.assertIsNone(out[3])
+
+    def test_a_new_attempt_or_closing_the_panel_clears_the_note(self):
+        out = run_page(self.open_panel() + self.reply(500, '{"error":"boom"}') + "await openChat(b); "
+                       "fetch = () => new Promise(() => {}); openChat(b); renderScore({ force: true }); const retrying = $('score').innerHTML; "
+                       "openingChat = null; closeScore(); openScore('r1@abc'); return [retrying, $('score').innerHTML]")
+        self.assertNotIn("boom", out[0])
+        self.assertNotIn("boom", out[1])
+        self.assertIn('data-open-chat="r1@abc"', out[1])
+
+    def test_the_visible_button_is_enabled_once_the_request_settles_after_a_redraw(self):
+        out = run_page(self.open_panel() + "let release; fetch = () => new Promise((r) => { release = r }); const done = openChat(b); "
+                       "renderScore({ force: true }); const during = $('score').innerHTML; "
+                       "release({ ok: true, status: 200, text: async () => '{}' }); await done; return [during, $('score').innerHTML]")
+        self.assertRegex(self.links(out[0]), r'<button[^>]*data-open-chat="r1@abc"[^>]*disabled')
+        self.assertNotRegex(self.links(out[1]), r'<button[^>]*data-open-chat="r1@abc"[^>]*disabled')
+        self.assertIn("Opened the chief chat in Terminal.", self.links(out[1]))
+
+    def test_an_answer_after_the_panel_closed_is_dropped(self):
+        out = run_page(self.open_panel() + "let release; fetch = () => new Promise((r) => { release = r }); const done = openChat(b); closeScore(); "
+                       "release({ ok: false, status: 500, text: async () => '{\"error\":\"late\"}' }); await done; openScore('r1@abc'); return [$('score').innerHTML, b.disabled, openingChat]")
+        self.assertNotIn("late", out[0])
+        self.assertFalse(out[1])
+        self.assertIsNone(out[2])
+
+    def test_a_disabled_chip_looks_inactive_and_does_not_light_up_on_hover(self):
+        css = page_css()
+        self.assertRegex(css, r"\.chip:disabled\s*\{[^}]*opacity:[^}]*cursor:\s*default")
+        self.assertRegex(css, r"\.chip:not\(:disabled\):hover\s*\{[^}]*border-color:\s*var\(--gold\)")
+        self.assertNotRegex(css, r"\.chip:hover\s*\{")
+        self.assertRegex(css, r"\.links \.note\s*\{[^}]*flex:\s*1 1 100%")
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
@@ -480,28 +808,257 @@ ROBOTS = PAGE.parent / "robots.svg"
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
 class BoardColumnsTest(unittest.TestCase):
-    def test_column_sizing_by_card_count(self):
-        self.assertEqual(run_page("return [1, 2, 3, 4, 5, 9].map((n) => { const v = colVars(n); return [v.b, v.a] })"),
-                         [[1, 1], [1, 2], [1, 3], [2, 2], [3, 3], [3, 3]])
-
-    def test_a_busy_column_carries_its_vars_and_a_card_grid(self):
+    def test_a_busy_column_stacks_its_cards(self):
+        css, page = page_css(), PAGE.read_text()
+        self.assertRegex(css, r"\.cards\s*\{\s*display:\s*grid;\s*gap:\s*10px;?\s*\}")
+        self.assertNotIn("prog-wrap", page)
+        self.assertEqual(run_page("return typeof colVars"), "undefined")
         runs = [sample_run(key=f"k{n}@x", id=f"k{n}", phase="implement") for n in range(4)]
         html = run_page(f"active = {json.dumps(sample_board(runs))}; renderProgramme(); return $('prog').innerHTML")
-        self.assertIn('style="--n:4;--b:2;--a:2"', html)
+        self.assertNotIn("--n:", html)
         self.assertEqual(html.count('<div class="cards">'), 1)
-        self.assertIn('class="col rail"', html)  # empty columns are still rails
-
-    def test_the_wide_board_rules_live_in_a_container_query(self):
-        css = page_css()
-        self.assertRegex(css, r"\.prog-wrap\s*\{[^}]*container:\s*board\s*/\s*inline-size")
-        wide = css[css.index("@container board (min-width: 900px)"):]
-        self.assertIn("repeat(auto-fill, minmax(260px, 1fr))", wide)
-        self.assertIn("calc(var(--a) * 360px + (var(--a) - 1) * 10px)", wide)
-        self.assertIn('class="prog-wrap"', PAGE.read_text())
+        self.assertIn('class="col rail"', html)
 
 
 def agent(id, role, status="running", provider="claude", model="claude-sonnet-5-5", kind=None):
     return {"id": id, "role": role, "kind": kind or role, "provider": provider, "model": model, "status": status}
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class StageFrameTest(unittest.TestCase):
+    def rule(self, sel):
+        return re.search(re.escape(sel) + r"\s*\{([^}]*)\}", page_css()).group(1)
+
+    def test_the_stage_box_is_a_dashboard_panel(self):
+        ens = self.rule(".ens")
+        self.assertRegex(ens, r"border:\s*1\.5px solid var\(--line\)")
+        self.assertRegex(ens, r"border-radius:\s*13px;")          # one value: even corners
+        self.assertIn("linear-gradient(180deg, #21160D, var(--night-2))", ens)
+        self.assertIn("overflow: hidden", ens)
+        self.assertRegex(self.rule(".ens .arch"), r"border-bottom:\s*1\.5px solid var\(--line\)")
+        self.assertRegex(self.rule(".ens .apron"), r"border-top:\s*1\.5px solid var\(--line\)")
+        self.assertRegex(self.rule(".ens .plate"), r"border:\s*1\.5px solid var\(--line\)")
+        for old in ("#7A5520", "#8A6224; }", "#9A6F2A", "18px 18px 5px 5px"):
+            self.assertNotIn(old, page_css())
+
+    def test_notes_fill_only_heads_and_flags(self):
+        shapes = run_page("return NOTE_SHAPES")
+        self.assertEqual(len(shapes), 3)
+        for s in shapes:
+            self.assertNotRegex(s["line"], r"[aAZz]")          # stems only: no heads, nothing closed
+            for part in (p.strip() for p in re.split(r"(?=M)", s["fill"]) if p.strip()):
+                self.assertTrue(part.endswith("Z") or re.search(r"\ba\b", part), part)  # closed, or a head drawn with arcs
+        emit = PAGE.read_text().split("function emit(")[1].split("\n  function ")[0]
+        self.assertIn("fill: 'none'", emit)
+        self.assertIn(".line", emit)
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class StageCollapseTest(unittest.TestCase):
+    """The stage can be hidden: collapsed means no animation work at all, and the rest of the page carries on."""
+    NOW = 1_800_000_000_000  # ms
+    KEY = "chief.stage.collapsed"
+    # Runs before the page loads. Counts every timer, frame request, interval and Web Animation the page asks for (nothing
+    # fires by itself; a test fires what it wants) and gives the stage a lenient fake DOM that counts its writes.
+    KIT = r"""
+const __probe = { timeout: 0, raf: 0, interval: 0, animate: 0, cancelled: 0, touched: 0, ro: 0 }
+const __timers = new Map(), __anims = new Set(), __seen = new Set()
+let __next = 1
+globalThis.setTimeout = (fn) => { __probe.timeout++; __timers.set(__next, fn); return __next++ }
+globalThis.clearTimeout = (id) => { __timers.delete(id) }
+globalThis.setInterval = () => { __probe.interval++; return __next++ }
+globalThis.requestAnimationFrame = () => { __probe.raf++; return __next++ }
+globalThis.matchMedia = () => ({ matches: false })
+globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' })
+globalThis.ResizeObserver = class { constructor() { __probe.ro++ } observe(n) { __seen.add(n) } unobserve(n) { __seen.delete(n) } }
+const __mk = () => {
+  const attrs = {}, classes = new Set(), subs = {}, touch = () => { __probe.touched++ }
+  let html = '', text = ''
+  const n = {
+    style: { setProperty() {} }, dataset: {}, children: [], parentNode: null, isConnected: false, title: '',
+    get innerHTML() { return html }, set innerHTML(v) { if (v !== html) touch(); html = v },
+    get textContent() { return text }, set textContent(v) { if (v !== text) touch(); text = v },
+    getAttribute: (k) => attrs[k] ?? null, setAttribute: (k, v) => { touch(); attrs[k] = String(v) },
+    classList: { contains: (c) => classes.has(c), toggle: (c, on) => { touch(); if (on) classes.add(c); else classes.delete(c) },
+      add: (...c) => { touch(); c.forEach((x) => classes.add(x)) }, remove: (...c) => { touch(); c.forEach((x) => classes.delete(x)) } },
+    querySelector: (sel) => (subs[sel] ||= __mk()), appendChild(c) { n.insertBefore(c, null) },
+    insertBefore(c, ref) { touch(); if (c.parentNode) c.remove(); const i = ref ? n.children.indexOf(ref) : n.children.length; n.children.splice(i, 0, c); c.parentNode = n; c.isConnected = true },
+    remove() { touch(); if (n.parentNode) { n.parentNode.children.splice(n.parentNode.children.indexOf(n), 1); n.parentNode = null; n.isConnected = false } },
+    getBoundingClientRect: () => ({ left: 0 }), getBBox() {}, insertAdjacentHTML() {},
+    animate() { __probe.animate++; const a = { cancel() { __probe.cancelled++; __anims.delete(a) } }; __anims.add(a); return a },
+  }
+  return n
+}
+document.createElement = __mk; document.createElementNS = __mk
+const __row = __mk()
+__row.getAnimations = () => [...__anims]
+__byId['stage-row'] = __row
+"""
+    STORAGE = {
+        "none": "",  # Node has no localStorage: the page's first read throws a ReferenceError
+        "empty": "const __s = new Map()",
+        "collapsed": "const __s = new Map([['chief.stage.collapsed', '1']])",
+        "open": "const __s = new Map([['chief.stage.collapsed', '0']])",
+        "junk": "const __s = new Map([['chief.stage.collapsed', 'maybe']])",
+    }
+    STORE = """Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+  getItem: (k) => (__s.has(k) ? __s.get(k) : null), setItem: (k, v) => { __s.set(k, String(v)) }, removeItem: (k) => { __s.delete(k) } } })"""
+    BROKEN = {
+        "denied": "Object.defineProperty(globalThis, 'localStorage', { configurable: true, get() { throw new Error('SecurityError') } })",
+        "full": "Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => null, setItem() { throw new Error('QuotaExceededError') } } })",
+        "unreadable": "Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem() { throw new Error('boom') }, setItem() { throw new Error('boom') } } })",
+    }
+    # Runs after the page loads: board feed, a click on the toggle, and a snapshot of everything the stage costs.
+    SETUP = """
+const NOW = 1800000000000; Date.now = () => NOW
+let current = null
+fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(current) })
+const click = () => $('stage-toggle').__fire('click')
+const state = () => ({ hidden: $('stage-hall').hidden, expanded: $('stage-toggle').getAttribute('aria-expanded'), label: $('stage-toggle').textContent })
+const snap = () => ({ kids: __row.children.length, timers: __timers.size, anims: __anims.size, observed: __seen.size, ...__probe })
+const titles = () => __row.children.map((c) => c.querySelector('h3').textContent)
+"""
+
+    def iso(self, ago_s):
+        return datetime.fromtimestamp(self.NOW / 1000 - ago_s, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def runs(self, n, players=2):
+        return [sample_run(key=f"r{i}@x", id=f"r{i}", title=f"Run {i}", last_activity=self.iso(10),
+                           agents=[agent("chief", "chief", kind="chief")] + [agent(f"r{i}p{k}", "implement") for k in range(players)])
+                for i in range(n)]
+
+    def board(self, n, players=2):
+        return json.dumps(sample_board(self.runs(n, players)))
+
+    def load(self, snippet, storage="empty"):
+        if storage in self.BROKEN:
+            before = self.KIT + self.BROKEN[storage]
+        else:
+            before = self.KIT + self.STORAGE[storage] + ("\n" + self.STORE if storage != "none" else "")
+        return run_page(self.SETUP + snippet, before=before)
+
+    def test_the_stage_is_open_by_default(self):
+        for storage in ("none", "empty", "junk", "open", "denied"):
+            with self.subTest(storage=storage):
+                out = self.load("return state()", storage)
+                self.assertEqual(out, {"hidden": False, "expanded": "true", "label": "hide stage"})
+
+    def test_the_toggle_collapses_the_stage_and_remembers_it(self):
+        out = self.load("""const open = state(); click(); const shut = state(); const saved = __s.get('chief.stage.collapsed')
+          click(); return [open, shut, saved, state(), __s.get('chief.stage.collapsed')]""")
+        self.assertEqual(out[0], {"hidden": False, "expanded": "true", "label": "hide stage"})
+        self.assertEqual(out[1], {"hidden": True, "expanded": "false", "label": "show stage"})
+        self.assertEqual(out[2], "1")
+        self.assertEqual(out[3], {"hidden": False, "expanded": "true", "label": "hide stage"})
+        self.assertEqual(out[4], "0")
+
+    def test_the_stored_choice_is_honoured_on_load(self):
+        self.assertEqual(self.load("return state()", "collapsed"), {"hidden": True, "expanded": "false", "label": "show stage"})
+        self.assertEqual(self.load("return state()", "open"), {"hidden": False, "expanded": "true", "label": "hide stage"})
+
+    def test_a_stage_collapsed_on_load_is_never_built(self):
+        out = self.load(f"""current = {self.board(2)}; await poll(); await poll()
+          return [snap(), Stage.mounted(), $('headline').innerHTML]""", "collapsed")
+        snap, mounted, headline = out
+        self.assertFalse(mounted)
+        self.assertEqual((snap["kids"], snap["timers"], snap["anims"], snap["observed"], snap["ro"]), (0, 0, 0, 0, 0))
+        self.assertEqual((snap["touched"], snap["timeout"], snap["animate"], snap["raf"]), (0, 0, 0, 0))
+        self.assertIn("4 players", headline)  # the header still counts what is on stage
+
+    def test_storage_that_throws_leaves_the_toggle_working(self):
+        for storage in self.BROKEN:
+            with self.subTest(storage=storage):
+                out = self.load(f"""current = {self.board(1)}; await poll(); click(); const shut = state(); const kids = __row.children.length
+                  click(); return [shut, kids, state(), __row.children.length]""", storage)
+                self.assertEqual(out[0], {"hidden": True, "expanded": "false", "label": "show stage"})
+                self.assertEqual(out[1], 0)
+                self.assertEqual(out[2], {"hidden": False, "expanded": "true", "label": "hide stage"})
+                self.assertEqual(out[3], 1)
+
+    def test_while_collapsed_a_board_refresh_leaves_the_stage_alone(self):
+        out = self.load(f"""current = {self.board(1)}; await poll(); const built = snap()
+          let renders = 0; const real = Stage.render; Stage.render = (l) => {{ renders++; return real(l) }}
+          click(); const shut = snap()
+          current = {self.board(3, 3)}; await poll(); await poll(); await poll()
+          return {{ built, shut, after: snap(), renders, headline: $('headline').innerHTML, prog: $('prog').innerHTML, where: $('where').textContent }}""")
+        self.assertEqual(out["built"]["kids"], 1)
+        self.assertGreater(out["built"]["observed"], 0)
+        self.assertEqual((out["shut"]["kids"], out["shut"]["timers"], out["shut"]["anims"], out["shut"]["observed"]), (0, 0, 0, 0))
+        self.assertEqual(out["after"], out["shut"])  # no stage DOM write, timer, frame, animation or observer after three polls
+        self.assertEqual(out["renders"], 0)
+        self.assertEqual(out["after"]["raf"], 0)
+        self.assertIn("3 ensembles", out["headline"])  # the header, programme and status line keep following the board
+        self.assertIn("Run 2", out["prog"])
+        self.assertIn("3 runs", out["where"])
+
+    def test_expanding_rebuilds_the_stage_from_the_current_board(self):
+        out = self.load(f"""current = {self.board(1)}; await poll(); click()
+          current = {self.board(3)}; await poll(); const shut = titles(); click(); const first = snap(); const names = titles()
+          return [shut, names, first]""")
+        self.assertEqual(out[0], [])
+        self.assertEqual(out[1], ["Run 0", "Run 1", "Run 2"])
+        self.assertGreater(out[2]["timers"], 0)  # the curtains are opening again
+        self.assertGreater(out[2]["observed"], 0)
+
+    def test_collapsing_cancels_every_timer_and_animation_the_stage_had_pending(self):
+        a = json.dumps(sample_board([sample_run(key="r0@x", id="r0", title="Run 0", last_activity=self.iso(10),
+                                                agents=[agent("chief", "chief", kind="chief"), agent("p0", "implement")])]))
+        b = json.dumps(sample_board([sample_run(key="r0@x", id="r0", title="Run 0", last_activity=self.iso(10),
+                                                agents=[agent("chief", "chief", kind="chief"), agent("p0", "implement"), agent("p1", "research")])]))
+        c = json.dumps(sample_board([sample_run(key="r0@x", id="r0", title="Run 0", last_activity=self.iso(10),
+                                                agents=[agent("chief", "chief", kind="chief"), agent("p1", "research")])]))
+        out = self.load(f"""current = {a}; await poll()
+          current = {b}; await poll()                      // a join: the chief turns to the house (timers, animations)
+          current = {c}; await poll()                      // a player walks off (the walk-off timer)
+          const busy = snap(); click(); const shut = snap(); const fired = [...__timers.values()].length
+          return [busy, shut, fired]""")
+        busy, shut, fired = out
+        self.assertGreater(busy["timers"], 2)
+        self.assertGreater(busy["anims"], 0)
+        self.assertEqual((shut["timers"], shut["anims"], shut["observed"], shut["kids"], fired), (0, 0, 0, 0, 0))
+        self.assertEqual(shut["animate"], busy["animate"])  # nothing was started on the way out
+
+    def test_expand_collapse_expand_leaves_exactly_one_loop(self):
+        out = self.load(f"""current = {self.board(2)}; await poll()
+          let renders = 0; const real = Stage.render; Stage.render = (l) => {{ renders++; return real(l) }}
+          const first = snap(), shown = titles()
+          for (let i = 0; i < 5; i++) {{ click(); click() }}
+          const again = snap(); renders = 0
+          await poll(); const afterPoll = snap()
+          return {{ first, shown, again, names: titles(), renders, afterPoll }}""")
+        self.assertEqual(out["shown"], ["Run 0", "Run 1"])
+        self.assertEqual(out["names"], ["Run 0", "Run 1"])  # five collapse/expand rounds later: still two stages, not twelve
+        for key in ("kids", "timers", "observed"):
+            self.assertEqual(out["again"][key], out["first"][key], key)
+        self.assertEqual(out["afterPoll"]["timers"], out["again"]["timers"])
+        self.assertEqual(out["renders"], 1)  # one stage tick per poll
+        self.assertEqual(out["afterPoll"]["interval"], 1)  # the page's own poll timer, and nothing else repeating
+        self.assertEqual(out["afterPoll"]["raf"], 0)
+
+    def test_every_timer_the_stage_sets_is_tracked_so_it_can_be_stopped(self):
+        stage = PAGE.read_text().split("const Stage = (() => {")[1].split("\n})()")[0]
+        self.assertEqual(len(re.findall(r"\bsetTimeout\(", stage)), 1)  # the tracked wrapper; every other call goes through it
+        for banned in ("setInterval(", "requestAnimationFrame("):
+            self.assertNotIn(banned, stage)
+
+    def test_the_toggle_is_a_real_button_between_the_header_and_the_hall(self):
+        stage = PAGE.read_text().split('<section class="stage"')[1].split("</section>")[0]
+        button = re.search(r'<button\b[^>]*\bid="stage-toggle"[^>]*>', stage).group(0)
+        for attr in ('type="button"', 'class="chip"', 'aria-expanded="true"', 'aria-controls="stage-hall"'):
+            self.assertIn(attr, button)
+        self.assertIn('>hide stage</button>', stage)
+        before, after = stage.split(button)
+        self.assertIn('id="ledger"', before)  # below the gauge row ...
+        self.assertEqual(len(re.findall(r"<div\b", before)) - len(re.findall(r"</div>", before)), 1)  # ... in a row of its own, not inside the header
+        self.assertIn('id="stage-hall"', after)  # and ahead of the hall it controls
+        self.assertIn('id="stage-row"', after)
+
+    def test_the_toggle_row_sits_in_the_flow_so_it_never_covers_the_gauges(self):
+        css = page_css()
+        bar = re.search(r"\.stage-bar\s*\{([^}]*)\}", css).group(1)
+        self.assertNotRegex(bar, r"position:\s*(absolute|fixed|sticky)")
+        self.assertNotRegex(bar, r"(^|[;\s])(top|bottom|transform|margin-top)\s*:")
+        self.assertRegex(css, r"\[hidden\]\s*\{\s*display:\s*none\s*!important")  # what hides the hall: no animation can run in it
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")

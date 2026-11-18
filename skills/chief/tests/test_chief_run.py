@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import shlex
 import shutil
 import signal
 import socket
@@ -1007,6 +1008,206 @@ class DashboardServerTest(Workspace):
         self.assertEqual(status, 200)
         self.assertEqual(len(body["changed"]), 1)
         self.assertEqual(self.post({"keys": ["no-such-run"]})[0], 400)
+
+    def test_open_chat_checks_host_origin_header_and_json(self):
+        # The server subprocess has no injected launcher, so every request here must be refused before any launch.
+        run = self.start(title="X")  # no chief chat is recorded for it in self.config
+        key = chief.run_key(str(self.repo.resolve()), run.name)
+
+        def post(path, body, **headers):
+            request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body).encode(),
+                                             method="POST", headers=headers)
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    return response.status
+            except urllib.error.HTTPError as error:
+                error.close()
+                return error.code
+
+        js = {"Content-Type": "application/json", "X-Chief-Dashboard": "1"}
+        for path in ("/open-chat", "/archive"):
+            self.assertEqual(post(path, {"key": key}, **js, Host="evil.example:80"), 403)
+            self.assertEqual(post(path, {"key": key}, **js, Origin="http://evil.example"), 403)
+        self.assertEqual(post("/open-chat", {"key": key}, **{"Content-Type": "application/json"}), 403)
+        self.assertEqual(post("/open-chat", {"key": key}, **{**js, "Content-Type": "text/plain"}), 415)
+        self.assertEqual(post("/open-chat", {"key": "no-such-run"}, **js, Origin=f"http://127.0.0.1:{self.port}"), 404)
+        self.assertEqual(post("/open-chat", {"key": key}, **js), 404)
+
+    def test_open_chat_answers_500_when_the_run_record_is_corrupt(self):
+        run = self.start(title="X")
+        key = chief.run_key(str(self.repo.resolve()), run.name)
+        state = json.loads((run / "run.json").read_text())
+        (run / "run.json").write_text(json.dumps({**state, "started": 5}))  # valid JSON the card code cannot read
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}/open-chat", data=json.dumps({"key": key}).encode(), method="POST",
+                                         headers={"Content-Type": "application/json", "X-Chief-Dashboard": "1"})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=10)
+        with caught.exception as error:
+            self.assertEqual(error.code, 500)
+            self.assertIn("replace", json.loads(error.read())["error"])
+
+
+class OpenChatTest(Workspace):
+    """POST /open-chat: resume the chief chat in Terminal, but never fork one that is still being written."""
+
+    def setUp(self):
+        super().setUp()
+        chief.OPENED_CHATS.clear()  # the record of launches is per process; every test starts without one
+        self.addCleanup(chief.OPENED_CHATS.clear)
+
+    def iso(self, t):
+        return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    def chat(self, run, session_id="abcd1234", cwd=None, age=3600):
+        """Record a chief chat whose last message, run start and file mtime are all `age` seconds old."""
+        t = time.time() - age
+        state = json.loads((run / "run.json").read_text())
+        state.update(started=self.iso(t - 60)[:19] + "Z", session_id=session_id)
+        (run / "run.json").write_text(json.dumps(state))
+        base = {"sessionId": session_id, "timestamp": self.iso(t), "isSidechain": False, "cwd": cwd or str(self.repo)}
+        lines = [
+            {**base, "type": "user", "message": {"role": "user", "content": "/chief add CSV export"}},
+            {**base, "type": "assistant", "message": {
+                "id": f"msg_{session_id}", "model": "claude-opus-5-5", "role": "assistant", "stop_reason": "tool_use",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "content": [{"type": "tool_use", "name": "Bash", "input": {"command": f"python3 chief-run.py start --title X  # {run}"}}]}},
+        ]
+        path = self.config / "projects" / "-repo" / f"{session_id}.jsonl"
+        path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+        os.utime(path, (t, t))
+        return path
+
+    def key(self, run):
+        return chief.run_key(str(self.repo.resolve()), run.name)
+
+    def call(self, key, launch, platform="darwin"):
+        with unittest.mock.patch.object(chief.sys, "platform", platform):
+            return chief.open_chat(str(self.repo), key, config_dir=str(self.config), prices=PRICES, launch=launch)
+
+    def refused(self, key, status, platform="darwin"):
+        calls = []
+        result = self.call(key, lambda cwd, session: calls.append((cwd, session)), platform)
+        self.assertEqual(result[0], status, result)
+        self.assertEqual(calls, [])
+        return result[1]
+
+    def test_a_quiet_chat_opens_with_the_recorded_values(self):
+        run = self.start(title="X")
+        self.chat(run)
+        calls = []
+        self.assertEqual(self.call(self.key(run), lambda cwd, session: calls.append((cwd, session))), (200, {"opened": "Terminal"}))
+        self.assertEqual(calls, [(str(self.repo), "abcd1234")])
+
+    def test_a_running_chat_is_not_forked(self):
+        run = self.start(title="X")
+        self.chat(run, age=0)
+        self.assertEqual(self.refused(self.key(run), 409), {"error": "live"})
+
+    def test_a_done_run_with_a_fresh_chat_is_not_forked(self):
+        run = self.start(title="X")
+        chief.set_phase(str(run), "done")
+        self.chat(run, age=0)
+        self.assertEqual(self.refused(self.key(run), 409), {"error": "live"})
+
+    def test_a_freshly_written_transcript_is_live(self):
+        # The records are old but the file is new: after fix/stale-chat-cards the card's `active` comes from the
+        # last message, and the file's own mtime still catches a chat that is being written right now.
+        run = self.start(title="X")
+        path = self.chat(run, age=3600)
+        os.utime(path, None)
+        self.assertEqual(self.refused(self.key(run), 409), {"error": "live"})
+
+    def test_unknown_runs_and_runs_without_a_chat_are_404(self):
+        run = self.start(title="X")
+        self.refused("nope", 404)
+        self.refused(self.key(run), 404)  # no chat recorded yet
+
+    def test_a_vanished_or_relative_folder_is_404(self):
+        run = self.start(title="X")
+        self.chat(run, cwd="/no/such/dir")
+        self.refused(self.key(run), 404)
+        self.chat(run, cwd="repo")
+        self.refused(self.key(run), 404)
+
+    def test_an_id_that_reads_as_an_option_is_refused(self):
+        run = self.start(title="X")
+        self.chat(run, session_id="-abcd1234")
+        self.assertIsNotNone(chief.plain_session_id("-abcd1234"))  # the card accepts it; open-chat must not
+        self.refused(self.key(run), 404)
+
+    def test_other_systems_get_501(self):
+        run = self.start(title="X")
+        self.chat(run)
+        self.refused(self.key(run), 501, platform="linux")
+
+    def test_a_failed_launch_is_500(self):
+        run = self.start(title="X")
+        self.chat(run)
+
+        def boom(cwd, session):
+            raise OSError("boom")
+        status, body = self.call(self.key(run), boom)
+        self.assertEqual(status, 500)
+        self.assertIn("boom", body["error"])
+
+    def test_a_second_open_of_the_same_chat_is_refused(self):
+        run = self.start(title="X")
+        self.chat(run)  # quiet: only the first launch makes it live
+        calls = []
+        launch = lambda cwd, session: calls.append((cwd, session))
+        self.assertEqual(self.call(self.key(run), launch), (200, {"opened": "Terminal"}))
+        self.assertEqual(self.call(self.key(run), launch), (409, {"error": "live"}))
+        self.assertEqual(calls, [(str(self.repo), "abcd1234")])
+
+    def test_two_requests_at_once_launch_once(self):
+        run = self.start(title="X")
+        self.chat(run)
+        calls, results = [], []
+
+        def slow(cwd, session):
+            calls.append(session)
+            time.sleep(0.3)  # the first launch is still running when the second request arrives
+        threads = [threading.Thread(target=lambda: results.append(self.call(self.key(run), slow))) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(status for status, _ in results), [200, 409])
+        self.assertEqual(calls, ["abcd1234"])
+
+    def test_a_launch_that_failed_or_is_old_does_not_block_the_next_open(self):
+        run = self.start(title="X")
+        self.chat(run)
+
+        def boom(cwd, session):
+            raise OSError("boom")
+        self.assertEqual(self.call(self.key(run), boom)[0], 500)
+        calls = []
+        launch = lambda cwd, session: calls.append(session)
+        self.assertEqual(self.call(self.key(run), launch)[0], 200)  # the failed launch left no record
+        self.assertEqual(self.call(self.key(run), launch)[0], 409)
+        chief.OPENED_CHATS["abcd1234"] = time.time() - chief.STALE_SECONDS - 1  # the launch is now old
+        self.assertEqual(self.call(self.key(run), launch)[0], 200)
+        self.assertEqual(calls, ["abcd1234", "abcd1234"])
+
+    def test_launch_terminal_writes_a_self_deleting_command(self):
+        seen = []
+        cwd = "/w/it's here"
+        argv = chief.launch_terminal(cwd, "abcd1234", run=lambda a, **kw: seen.append((a, kw)), folder=self.folder.name)
+        path = argv[3]
+        self.assertEqual(argv, ["open", "-a", "Terminal", path])
+        self.assertEqual(Path(path).parent, Path(self.folder.name))
+        self.assertTrue(path.endswith(".command") and os.access(path, os.X_OK))
+        self.assertEqual(Path(path).read_text(), "#!/bin/sh\n"
+                         f"rm -f -- {shlex.quote(path)}\ncd -- {shlex.quote(cwd)} && exec claude --resume {shlex.quote('abcd1234')}\n")
+        self.assertEqual(seen, [(argv, {"check": True, "timeout": 10})])
+
+    def test_a_failed_launch_leaves_no_command_file(self):
+        def boom(argv, **kw):
+            raise OSError("no open")
+        with self.assertRaises(OSError):
+            chief.launch_terminal("/w", "abcd1234", run=boom, folder=self.folder.name)
+        self.assertEqual(list(Path(self.folder.name).glob("chief-chat-*.command")), [])
 
 
 class CodexRecordTest(unittest.TestCase):
