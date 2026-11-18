@@ -78,11 +78,11 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 /* ---- one stage per run: gilt frame, valance + title plate (the arch), opening with slim drapes, floor apron ----
    Width cost of all the chrome: 2 x (2 px frame + 7 px drape) = 18 px. Everything else is full width for the pit. */
 .ens { --dw: 7px; --open-d: 0s; flex: 1 1 0; min-width: 236px; max-width: 486px; scroll-snap-align: center; position: relative; display: flex; flex-direction: column;
-  border: 2px solid #7A5520; border-radius: 18px 18px 5px 5px; overflow: hidden; background: #0D0805;
-  box-shadow: inset 0 0 0 1px rgba(243,213,143,.22), 0 8px 20px rgba(0,0,0,.55); animation: stageIn .6s ease-out; }
+  border: 1.5px solid var(--line); border-radius: 13px; overflow: hidden; background: linear-gradient(180deg, #21160D, var(--night-2));
+  box-shadow: 0 8px 20px rgba(0,0,0,.35); animation: stageIn .6s ease-out; }
 @keyframes stageIn { from { opacity: 0; transform: translateY(8px); } }
 .ens.leaving { opacity: 0; transform: translateY(10px) scale(.97); transition: opacity .55s ease-in, transform .55s ease-in; pointer-events: none; }
-.ens .arch { position: relative; z-index: 5; padding: 13px var(--dw) 6px; background: linear-gradient(180deg, #2E190C, #1A0F08); border-bottom: 2px solid #8A6224; }
+.ens .arch { position: relative; z-index: 5; padding: 13px var(--dw) 6px; background: transparent; border-bottom: 1.5px solid var(--line); }
 /* top valance: red swag, scalloped lower edge, sways a little */
 .ens .val { position: absolute; left: 0; right: 0; top: 0; height: 15px; z-index: 2; pointer-events: none; transform-origin: 50% 0;
   background: repeating-linear-gradient(90deg, #1E0A07 0, #7A2B1E 8px, #1E0A07 16px);
@@ -90,9 +90,9 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
           mask: radial-gradient(12px 14px at 11px 0, #000 97%, transparent 100%) 0 0 / 22px 15px repeat-x;
   animation: valance 6.5s ease-in-out infinite alternate; animation-delay: var(--sway-d, 0s); }
 @keyframes valance { from { transform: scaleY(1); } to { transform: scaleY(1.09); } }
-.ens .plate { position: relative; z-index: 1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0 8px; padding: 6px 10px 7px; border: 1.5px solid rgba(201,153,60,.5); border-radius: 11px;
+.ens .plate { position: relative; z-index: 1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0 8px; padding: 6px 10px 7px; border: 1.5px solid var(--line); border-radius: 10px;
   background: linear-gradient(180deg, #21160D, var(--night-2)); cursor: pointer; min-width: 0; }
-.ens .plate:hover { border-color: rgba(243,213,143,.75); }
+.ens .plate:hover { border-color: rgba(228,176,74,.6); }
 .ens .plate .lamp { grid-row: span 2; width: 7px; height: 7px; border-radius: 50%; background: var(--lamp); box-shadow: 0 0 8px var(--lamp); animation: flicker 2.4s ease-in-out infinite; }
 .ens.dim .plate .lamp { background: var(--muted); box-shadow: none; animation: none; opacity: .6; }
 .ens .plate h3 { grid-column: 2; margin: 0; font: 400 19px/1.15 var(--f-display); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -131,7 +131,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .ens.closing .cur.l, .ens.closing .cur.r, .ens.closed .cur.l, .ens.closed .cur.r { transform: none; }
 .ens.closed .cur { visibility: visible; transition: none; }
 /* floor apron with its own footlights */
-.ens .apron { position: relative; z-index: 5; height: 26px; background: linear-gradient(180deg, #4C2E17, #23140A); border-top: 2px solid #9A6F2A; }
+.ens .apron { position: relative; z-index: 5; height: 26px; background: rgba(20,13,8,.6); border-top: 1.5px solid var(--line); }
 .ens .apron::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: 6px; height: 8px; pointer-events: none;
   background: radial-gradient(6px 3px at 50% 50%, #FFE2A0, rgba(255,210,122,.35) 60%, transparent 100%) 0 0 / 36px 8px repeat-x;
   animation: flicker calc(var(--beat) * 6) ease-in-out infinite; }
@@ -236,9 +236,10 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .chip[aria-pressed="true"] { border-color: var(--gold); color: var(--gold-lt); background: rgba(228,176,74,.1); }
 .chip.danger { border-color: rgba(224,83,61,.5); color: #F2A091; }
 .bar .spacer { flex: 1; }
-.notice { display: flex; gap: 10px; align-items: baseline; padding: 9px 14px; margin-bottom: 8px; border: 1.5px solid rgba(224,83,61,.45); border-radius: 12px; background: rgba(224,83,61,.07); font-size: 13px; }
+.notice { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; min-width: 0; padding: 9px 14px; margin-bottom: 8px; border: 1.5px solid rgba(224,83,61,.45); border-radius: 12px; background: rgba(224,83,61,.07); font-size: 13px; }
 .notice b { font: 500 11px var(--f-mono); color: var(--bad); letter-spacing: .08em; white-space: nowrap; }
-.notice ul { margin: 0; padding-left: 16px; }
+.notice ul { margin: 0; padding-left: 16px; min-width: 0; }
+.notice li { overflow-wrap: anywhere; }
 .status-line { color: var(--muted); font: 12px var(--f-mono); margin: 0 0 10px; }
 
 /* programme */
@@ -598,6 +599,13 @@ function faceGate({ facing, readyAt }, kind, nowMs) {
   return 'show'
 }
 
+/* The notes the players send up: heads and flags are filled, stems and the beam are stroked lines, so nothing open gets filled. */
+const NOTE_SHAPES = [
+  { fill: 'M 0 0 m -3.6 0 a 3.6 2.6 -20 1 0 7.2 0 a 3.6 2.6 -20 1 0 -7.2 0 M 3.2 -15 Q 8 -12 9 -7 Q 7 -10 3.2 -11 Z', line: 'M 3.2 -0.6 V -15' },
+  { fill: 'M 0 0 m -3.4 0 a 3.4 2.5 -20 1 0 6.8 0 a 3.4 2.5 -20 1 0 -6.8 0 M 12 -3.5 m -3.4 0 a 3.4 2.5 -20 1 0 6.8 0 a 3.4 2.5 -20 1 0 -6.8 0 M 3 -14 L 15 -17 L 15 -14.6 L 3 -11.6 Z', line: 'M 3 -0.5 V -14 M 15 -3.5 V -17' },
+  { fill: 'M 0 0 m -3.6 0 a 3.6 2.6 -20 1 0 7.2 0 a 3.6 2.6 -20 1 0 -7.2 0', line: 'M 3.2 -0.6 V -15' },
+]
+
 /* ---------- the stage: one small stage per live run ----------
    Stage.mount(rowEl) once, then Stage.render(ensembles) on every poll. It diffs by run and agent id and writes only
    what changed, so the robots keep playing across polls. It touches no DOM until mount. */
@@ -606,12 +614,6 @@ const Stage = (() => {
   const VW = 360, Y0 = -12, VH = 250, CX = 180, FY = 226, K = .32    // viewBox 0 -12 360 250 (top 40 = label lanes + notes)
   const S = .44, CS = .46, TOP = 74                                  // robot scale, chief scale, robot height incl. badge (units)
   const isClaude = (a) => a.provider === 'claude'
-  const NOTE_SHAPES = [
-    'M 0 0 m -3.6 0 a 3.6 2.6 -20 1 0 7.2 0 a 3.6 2.6 -20 1 0 -7.2 0 M 3.2 -0.6 V -15 Q 8 -12 9 -7 Q 7 -10 3.2 -11',
-    'M 0 0 m -3.4 0 a 3.4 2.5 -20 1 0 6.8 0 a 3.4 2.5 -20 1 0 -6.8 0 M 3 -0.5 V -14 L 15 -17 V -3.5 M 15 -3.5 m -3.4 0 a 3.4 2.5 -20 1 0 6.8 0 a 3.4 2.5 -20 1 0 -6.8 0 M 3 -11 L 15 -14',
-    'M 0 0 m -3.6 0 a 3.6 2.6 -20 1 0 7.2 0 a 3.6 2.6 -20 1 0 -7.2 0 M 3.2 -0.6 V -15',
-  ]
-
   let row = null, T0 = 0, curtains = true, ghost = null, lastList = [], beatS = .75, sizes = null
   const ens = new Map()
   const reduce = () => matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -758,7 +760,9 @@ const Stage = (() => {
     const done = () => { if (over) return; over = true; g.remove(); st.releasing.delete(i); if (!st.leaving && ens.get(st.id) === st) update(st, st.last) }
     if (reduce()) { setTimeout(done, 0); return }
     const x = SEATS[i].x, dx = wingX(x) - x, walk = g.querySelector('.walk'), dur = 1500 + Math.abs(dx) * 3
-    const pop = el('path', { d: NOTE_SHAPES[0], fill: '#FFD27A' }, g)
+    const pop = el('g', {}, g)
+    el('path', { d: NOTE_SHAPES[0].fill, fill: '#FFD27A' }, pop)
+    el('path', { d: NOTE_SHAPES[0].line, fill: 'none', stroke: '#FFD27A', 'stroke-width': 1.3, 'stroke-linecap': 'round' }, pop)
     pop.animate([{ transform: 'translate(0px,-50px) scale(.4)', opacity: 0 }, { transform: 'translate(0px,-62px) scale(1.3)', opacity: 1, offset: .3 }, { transform: 'translate(6px,-86px) scale(1)', opacity: 0 }], { duration: 1300, easing: 'ease-out', fill: 'forwards' })
     walk.animate([
       { transform: 'none', opacity: 1 },
@@ -805,12 +809,14 @@ const Stage = (() => {
     box.innerHTML = ''
     const ph = phase(8)
     for (let k = 0; k < want; k++) {
-      const o = occ[Math.round(k * (occ.length - 1) / Math.max(want - 1, 1))], color = o.gpt ? '#9FD4C5' : '#FFD27A'
+      const o = occ[Math.round(k * (occ.length - 1) / Math.max(want - 1, 1))], color = o.gpt ? '#9FD4C5' : '#F3D58F'
       const outer = el('g', { transform: `translate(${o.p.x - 4} ${o.p.y - TOP})` }, box)
       const n = el('g', { class: 'note' }, outer)
       n.style.setProperty('--dx', `${(k % 2 ? -1 : 1) * (8 + k * 3)}px`)
       n.style.animationDelay = `${[0, 3, 5][k] * beatS - ph}s`
-      el('path', { d: NOTE_SHAPES[k % 3], fill: color, stroke: color, 'stroke-width': 1.3, 'stroke-linecap': 'round', transform: 'scale(.8)' }, n)
+      const s = NOTE_SHAPES[k % 3]
+      el('path', { d: s.fill, fill: color, transform: 'scale(.8)' }, n)
+      el('path', { d: s.line, fill: 'none', stroke: color, 'stroke-width': 1.3, 'stroke-linecap': 'round', transform: 'scale(.8)' }, n)
     }
   }
 

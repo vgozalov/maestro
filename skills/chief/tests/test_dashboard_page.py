@@ -125,6 +125,14 @@ class LayoutTest(unittest.TestCase):
         small = css[css.index("@media (max-width: 1100px)"):css.index("@media (max-width: 620px)")]
         self.assertNotRegex(small, r"\.(prog|col|cards)\b")
 
+    def test_the_git_notice_wraps_inside_a_narrow_window(self):
+        css = page_css()
+        notice = re.search(r"\.notice\s*\{([^}]*)\}", css).group(1)
+        self.assertRegex(notice, r"flex-wrap:\s*wrap")
+        self.assertRegex(notice, r"min-width:\s*0")
+        self.assertRegex(css, r"\.notice ul\s*\{[^}]*min-width:\s*0")
+        self.assertRegex(css, r"\.notice li\s*\{[^}]*overflow-wrap:\s*anywhere")
+
     def test_empty_columns_keep_their_vertical_title(self):
         css = page_css()
         self.assertRegex(css, r"\.col\.rail \.col-head\s*\{[^}]*writing-mode:\s*vertical-rl")
@@ -508,6 +516,35 @@ class BoardColumnsTest(unittest.TestCase):
 
 def agent(id, role, status="running", provider="claude", model="claude-sonnet-5-5", kind=None):
     return {"id": id, "role": role, "kind": kind or role, "provider": provider, "model": model, "status": status}
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class StageFrameTest(unittest.TestCase):
+    def rule(self, sel):
+        return re.search(re.escape(sel) + r"\s*\{([^}]*)\}", page_css()).group(1)
+
+    def test_the_stage_box_is_a_dashboard_panel(self):
+        ens = self.rule(".ens")
+        self.assertRegex(ens, r"border:\s*1\.5px solid var\(--line\)")
+        self.assertRegex(ens, r"border-radius:\s*13px;")          # one value: even corners
+        self.assertIn("linear-gradient(180deg, #21160D, var(--night-2))", ens)
+        self.assertIn("overflow: hidden", ens)
+        self.assertRegex(self.rule(".ens .arch"), r"border-bottom:\s*1\.5px solid var\(--line\)")
+        self.assertRegex(self.rule(".ens .apron"), r"border-top:\s*1\.5px solid var\(--line\)")
+        self.assertRegex(self.rule(".ens .plate"), r"border:\s*1\.5px solid var\(--line\)")
+        for old in ("#7A5520", "#8A6224; }", "#9A6F2A", "18px 18px 5px 5px"):
+            self.assertNotIn(old, page_css())
+
+    def test_notes_fill_only_heads_and_flags(self):
+        shapes = run_page("return NOTE_SHAPES")
+        self.assertEqual(len(shapes), 3)
+        for s in shapes:
+            self.assertNotRegex(s["line"], r"[aAZz]")          # stems only: no heads, nothing closed
+            for part in (p.strip() for p in re.split(r"(?=M)", s["fill"]) if p.strip()):
+                self.assertTrue(part.endswith("Z") or re.search(r"\ba\b", part), part)  # closed, or a head drawn with arcs
+        emit = PAGE.read_text().split("function emit(")[1].split("\n  function ")[0]
+        self.assertIn("fill: 'none'", emit)
+        self.assertIn(".line", emit)
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
