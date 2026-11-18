@@ -1033,9 +1033,27 @@ class DashboardServerTest(Workspace):
         self.assertEqual(post("/open-chat", {"key": "no-such-run"}, **js, Origin=f"http://127.0.0.1:{self.port}"), 404)
         self.assertEqual(post("/open-chat", {"key": key}, **js), 404)
 
+    def test_open_chat_answers_500_when_the_run_record_is_corrupt(self):
+        run = self.start(title="X")
+        key = chief.run_key(str(self.repo.resolve()), run.name)
+        state = json.loads((run / "run.json").read_text())
+        (run / "run.json").write_text(json.dumps({**state, "started": 5}))  # valid JSON the card code cannot read
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}/open-chat", data=json.dumps({"key": key}).encode(), method="POST",
+                                         headers={"Content-Type": "application/json", "X-Chief-Dashboard": "1"})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=10)
+        with caught.exception as error:
+            self.assertEqual(error.code, 500)
+            self.assertIn("replace", json.loads(error.read())["error"])
+
 
 class OpenChatTest(Workspace):
     """POST /open-chat: resume the chief chat in Terminal, but never fork one that is still being written."""
+
+    def setUp(self):
+        super().setUp()
+        chief.OPENED_CHATS.clear()  # the record of launches is per process; every test starts without one
+        self.addCleanup(chief.OPENED_CHATS.clear)
 
     def iso(self, t):
         return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -1131,6 +1149,46 @@ class OpenChatTest(Workspace):
         status, body = self.call(self.key(run), boom)
         self.assertEqual(status, 500)
         self.assertIn("boom", body["error"])
+
+    def test_a_second_open_of_the_same_chat_is_refused(self):
+        run = self.start(title="X")
+        self.chat(run)  # quiet: only the first launch makes it live
+        calls = []
+        launch = lambda cwd, session: calls.append((cwd, session))
+        self.assertEqual(self.call(self.key(run), launch), (200, {"opened": "Terminal"}))
+        self.assertEqual(self.call(self.key(run), launch), (409, {"error": "live"}))
+        self.assertEqual(calls, [(str(self.repo), "abcd1234")])
+
+    def test_two_requests_at_once_launch_once(self):
+        run = self.start(title="X")
+        self.chat(run)
+        calls, results = [], []
+
+        def slow(cwd, session):
+            calls.append(session)
+            time.sleep(0.3)  # the first launch is still running when the second request arrives
+        threads = [threading.Thread(target=lambda: results.append(self.call(self.key(run), slow))) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(status for status, _ in results), [200, 409])
+        self.assertEqual(calls, ["abcd1234"])
+
+    def test_a_launch_that_failed_or_is_old_does_not_block_the_next_open(self):
+        run = self.start(title="X")
+        self.chat(run)
+
+        def boom(cwd, session):
+            raise OSError("boom")
+        self.assertEqual(self.call(self.key(run), boom)[0], 500)
+        calls = []
+        launch = lambda cwd, session: calls.append(session)
+        self.assertEqual(self.call(self.key(run), launch)[0], 200)  # the failed launch left no record
+        self.assertEqual(self.call(self.key(run), launch)[0], 409)
+        chief.OPENED_CHATS["abcd1234"] = time.time() - chief.STALE_SECONDS - 1  # the launch is now old
+        self.assertEqual(self.call(self.key(run), launch)[0], 200)
+        self.assertEqual(calls, ["abcd1234", "abcd1234"])
 
     def test_launch_terminal_writes_a_self_deleting_command(self):
         seen = []

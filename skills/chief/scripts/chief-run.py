@@ -1071,6 +1071,8 @@ def find_run(runs, key):
 # ---- resuming the chief chat from the dashboard ---------------------------------------------
 
 OPEN_CHAT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,79}$")  # stricter than SESSION_ID: never starts with "-", so never reads as an option
+OPENED_CHATS = {}  # session id -> when this process last opened it; a chat opened within STALE_SECONDS counts as live
+OPEN_CHAT_LOCK = threading.Lock()  # the check and the record happen under it, so two requests cannot both open one chat
 
 
 def launch_terminal(cwd, session_id, run=subprocess.run, folder=None):
@@ -1118,10 +1120,25 @@ def open_chat(repo, key, config_dir=None, prices=None, launch=None):
         return 409, {"error": "live"}
     if sys.platform != "darwin":
         return 501, {"error": "Open chat needs macOS Terminal"}
+    # A chat this process opened is live from the moment it is opened, though its transcript has not changed yet
+    # (a double click, or a second click before the user types). Reserve it before the launch, under the lock.
+    with OPEN_CHAT_LOCK:
+        now = time.time()
+        for old in [sid for sid, at in OPENED_CHATS.items() if now - at >= STALE_SECONDS]:
+            del OPENED_CHATS[old]
+        if session in OPENED_CHATS:
+            return 409, {"error": "live"}
+        OPENED_CHATS[session] = now
+    launched = False
     try:
         (launch or launch_terminal)(cwd, session)
+        launched = True
     except (OSError, subprocess.SubprocessError) as error:
         return 500, {"error": f"Terminal did not open: {error}"}
+    finally:
+        if not launched:  # nothing opened, so nothing to protect: the next click may try again
+            with OPEN_CHAT_LOCK:
+                OPENED_CHATS.pop(session, None)
     return 200, {"opened": "Terminal"}
 
 
@@ -1447,7 +1464,10 @@ def serve(repo, port, refresh_minutes=5, days=DEFAULT_DAYS, idle_hours=0):
                     key = str(body.get("key") or "")  # the only field read: never a command, folder or session id
                 except (ValueError, AttributeError):
                     return self.send(415, json.dumps({"error": "the body is not a JSON object"}), "application/json")
-                status, payload = open_chat(repo, key)
+                try:
+                    status, payload = open_chat(repo, key)
+                except Exception as error:  # a run record the card code cannot read must not drop the connection
+                    status, payload = 500, {"error": f"{type(error).__name__}: {error}"}
                 return self.send(status, json.dumps(payload), "application/json")
             try:
                 length = min(int(self.headers.get("Content-Length") or 0), 65536)
