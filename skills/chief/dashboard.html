@@ -1345,7 +1345,7 @@ function renderScore({ force = false } = {}) {
         if (!command) return ''  // a session id that is not a plain token gets neither the command nor the link
         return `<div class="links"><code>${esc(command)}</code>
           <button class="chip" type="button" data-copy="${esc(command)}">copy resume command</button>
-          ${openChatControl(r, sel)}</div>`
+          ${sel.id === 'chief' ? openChatControl(r, sel) : ''}</div>`
       })() : ''}
       ${sel.kind !== 'chief' && lit && sel.agent_id ? `<div class="mix">steer it from the chief session: SendMessage to ${esc(sel.agent_id)}</div>` : ''}
       ${sel.kind !== 'chief' ? `<div><div class="label" style="margin-bottom:6px">reply</div><pre class="reply">${esc(sel.report || (lit ? 'No reply yet. The agent is still playing.' : 'No reply.'))}</pre></div>` : ''}`

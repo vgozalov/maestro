@@ -693,6 +693,17 @@ class OpenChatPageTest(unittest.TestCase):
         self.assertNotIn("vscode://", html)
         self.assertNotIn("data-open-chat", html.split('class="s-side"')[0])   # not in the header
 
+    def test_only_the_current_chief_session_gets_the_open_chat_button(self):
+        earlier = {**self.CHIEF, "id": "chief-abc123", "session_id": "abc123"}
+        board = sample_board([sample_run(session_id="1a2b3c4d-aaaa", agents=[self.CHIEF, earlier])])
+        for agent_id, button in (("chief", True), ("chief-abc123", False)):
+            html = run_page(f"Date.now = () => {self.NOW * 1000}; active = {json.dumps(board)}; openKey = 'r1@abc'; openAgent = {json.dumps(agent_id)}; renderScore({{ force: true }}); return $('score').innerHTML")
+            side = html.split('class="s-side"')[1]
+            self.assertEqual('data-open-chat="r1@abc"' in side, button, agent_id)
+            self.assertEqual("chat may be open elsewhere" in side, False, agent_id)
+            self.assertIn("copy resume command", side)
+        self.assertIn("claude --resume abc123", side)
+
     def test_it_posts_only_the_key_and_disables_the_button_meanwhile(self):
         out = run_page("const b = { dataset: { openChat: 'r1@abc' }, disabled: false, textContent: 'open chat' }; openChat(b); return [__fetches.filter(([u]) => u === '/open-chat'), b.disabled]")
         self.assertEqual(out[0], [["/open-chat", {"method": "POST", "headers": {"Content-Type": "application/json", "X-Chief-Dashboard": "1"}, "body": '{"key":"r1@abc"}'}]])
