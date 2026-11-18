@@ -171,10 +171,20 @@ class HeaderTest(unittest.TestCase):
         self.assertLess(html.index('id="meters"'), html.index('id="ledger"'))
         self.assertRegex(page_css(), r"\.right\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap")
 
-    def test_the_header_is_shorter(self):
+    def test_gauges_are_squareish_like_1_1_0(self):
         css = page_css()
-        self.assertRegex(css, r"\.meter svg\s*\{[^}]*width:\s*100px[^}]*height:\s*58px")
+        self.assertRegex(css, r"\.meter\s*\{[^}]*display:\s*grid;[^}]*justify-items:\s*center")
+        self.assertNotRegex(css, r"\.meter\s*\{[^}]*grid-template-columns")
+        self.assertNotRegex(css, r"\.meter svg\s*\{[^}]*grid-row")
+        self.assertRegex(css, r"\.meter svg\s*\{[^}]*width:\s*132px[^}]*height:\s*76px")
+        narrow = css[css.index("@media (max-width: 620px)"):]
+        self.assertRegex(narrow, r"\.meter svg\s*\{[^}]*width:\s*112px[^}]*height:\s*66px")
         self.assertRegex(css, r"\.headline\s*\{[^}]*clamp\(26px,\s*3\.4vw,\s*40px\)")
+
+    def test_no_line_between_the_header_and_the_stages(self):
+        hall = re.search(r"\.hall\s*\{([^}]*)\}", page_css()).group(1)
+        self.assertNotIn("border", hall)
+        self.assertNotIn("background", hall)   # the stage's own gradient runs on, as in 1.1.0
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")

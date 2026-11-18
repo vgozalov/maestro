@@ -52,12 +52,12 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .sub { color: var(--muted); font-size: 15px; max-width: 64ch; margin: 0; }
 .right { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; justify-content: flex-end; }
 .meters { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
-.meter { display: grid; grid-template-columns: auto auto; justify-items: start; align-items: center; column-gap: 8px; row-gap: 2px; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
-.meter svg { grid-row: span 2; width: 100px; height: 58px; display: block; }
+.meter { display: grid; justify-items: center; gap: 2px; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
+.meter svg { width: 132px; height: 76px; display: block; }
 .meter .who { font: 500 12px var(--f-mono); }
 .meter .wk { font: 11px var(--f-mono); color: var(--muted); }
 .ledger { display: grid; grid-template-columns: repeat(3, auto); gap: 0; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
-.ledger > div { padding: 8px 14px; display: grid; gap: 4px; border-left: 1.5px solid var(--line); min-width: 120px; }
+.ledger > div { padding: 8px 14px; display: grid; gap: 4px; align-content: center; border-left: 1.5px solid var(--line); min-width: 120px; }
 .ledger > div:first-child { border-left: 0; }
 .ledger .v { font: 400 26px/1 var(--f-display); font-variant-numeric: tabular-nums; }
 .ledger .v small { font: 500 12px var(--f-mono); color: var(--muted); margin-left: 3px; }
@@ -67,10 +67,9 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 @keyframes play { 0%, 100% { transform: rotate(-2.2deg) translateY(0); } 25% { transform: rotate(0deg) translateY(-1.5px); } 50% { transform: rotate(2.2deg) translateY(0); } 75% { transform: rotate(0deg) translateY(-1.5px); } }
 @keyframes flicker { 50% { opacity: .5; } }
 
-/* The hall: the dark house around the stages. Each live run is its own small stage (.ens); the hall only holds the row. */
-.hall { position: relative; padding: 16px 2px 8px; overflow: hidden;
-  background: linear-gradient(180deg, #0D0805 0%, #150C07 70%, #1D1109 100%);
-  border-top: 1.5px solid rgba(201,153,60,.55); }
+/* The hall: holds the row of stages. Each live run is its own small stage (.ens); the hall adds no band or line of its own,
+   so the stage's gradient runs straight on into the row. */
+.hall { position: relative; padding: 16px 2px 8px; overflow: hidden; }
 /* The row: stages share ONE row, 3 px apart. They grow to 486 px, never shrink below 236 px; past that the row scrolls. */
 .hall > .row { display: flex; gap: 3px; overflow-x: auto; scroll-snap-type: x proximity; padding: 2px 0 8px; scrollbar-width: thin; scrollbar-color: rgba(228,176,74,.35) transparent; }
 .row > .ens:first-child { margin-left: auto; }           /* centred when it fits, scrollable from the left edge when not */
@@ -374,7 +373,7 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
   .right { justify-content: flex-start; }
 }
 @media (max-width: 620px) {
-  .meter svg { width: 88px; height: 51px; }
+  .meter svg { width: 112px; height: 66px; }
   .ledger { grid-template-columns: 1fr 1fr; }
   .ledger > div:nth-child(3) { border-left: 0; border-top: 1.5px solid var(--line); grid-column: 1 / -1; }
   .s-head h2 { font-size: 28px; }
