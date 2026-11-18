@@ -311,11 +311,16 @@ class HeaderTest(unittest.TestCase):
         self.assertNotIn("410px", page_css())                                          # no second switch left behind at 410px
         self.assertNotRegex(css, r"grid-template-columns")   # still two gauges across: 50 / 50 holds down to 320px
 
-    def test_the_widest_text_beside_a_dial_is_capped_so_a_blocked_account_keeps_its_dial(self):
-        # "Claude · blocked" is 115px of mono at 12px; beside the dial it squeezed that dial to 71px at 525px. Capped at the same 96px
-        # the "run the usage check" hint wraps at, the title wraps at the dot and the dial never gives up more than that.
+    def test_the_account_title_does_not_size_the_column_beside_a_dial(self):
+        # "Claude · blocked" is 115px of mono at 12px. Capped at 96px it still widened the readings' column by 24px, and the dial
+        # (104px beside it) lost that: 104px at 500px of page, 91px at 501px, and 100px at 520px, 89px at 521px. The title now
+        # fills the column the readings make, as the ledger's sparkline fills its cell, and wraps at the dot: whatever it says,
+        # the dial is the size it has for "Claude" alone. (The "run the usage check" hint keeps its own 96px wrap.)
         css = page_css()
-        self.assertRegex(self.rule(css, ".meter .who"), r"max-width:\s*96px")
+        who = self.rule(css, ".meter .who")
+        self.assertRegex(who, r"width:\s*0\s*;")
+        self.assertRegex(who, r"min-width:\s*100%")
+        self.assertNotRegex(who, r"max-width|white-space:\s*nowrap")
         self.assertRegex(self.rule(css, ".rd.na"), r"max-width:\s*96px")
         html = run_page("return meter('Claude', { '5h': 11, week: 29, blocked: true }, '#D4703C')")
         self.assertIn(">Claude · blocked</span>", html)
@@ -418,7 +423,8 @@ class HeaderTest(unittest.TestCase):
             for junk in ("NaN", "null", "undefined"):
                 self.assertNotIn(junk, html)
         # the other states keep their texts: nothing readable is still "no reading", and a blocked account still says so
-        self.assertIn('aria-label="no reading"', run_page("return meter('Claude', { '5h': null, week: null, blocked: true }, '#D4703C')"))
+        self.assertIn('aria-label="Claude: blocked, no reading"', run_page("return meter('Claude', { '5h': null, week: null, blocked: true }, '#D4703C')"))
+        self.assertIn('aria-label="no reading"', run_page("return meter('Claude', { '5h': null, week: null }, '#D4703C')"))   # not blocked: as before
         blocked = run_page("return meter('Claude', { '5h': 11, week: 29, blocked: true }, '#D4703C')")
         self.assertIn('aria-label="Claude: 11% of the 5-hour window, 29% of the week, blocked; line at 60%"', blocked)
         self.assertIn("Claude · blocked", blocked)
