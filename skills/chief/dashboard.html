@@ -43,10 +43,10 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .stage { position: relative; border-radius: 16px; border: 1.5px solid rgba(228,176,74,.35); overflow: hidden;
   background: radial-gradient(700px 300px at 70% 40%, rgba(255,170,60,.12), transparent 70%), linear-gradient(180deg, #1A0F09, #0E0805); }
 .stage-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; padding: 14px 18px 4px; }
-/* A zero-size spacer between the headline and the header row (order 1; the row is order 2). While the two share a line it soaks
-   up the free space, so the row keeps its natural size beside the headline. The moment the row no longer fits it wraps, is alone
-   on its line, and its flex-grow takes the whole row: the switch follows the content, not a fixed width. */
-.stage-top::after { content: ""; order: 1; flex: 1000 1 0; min-width: 0; }
+/* The headline block soaks up the free space beside the header row (1000 : 1), so there the row keeps its natural size. The moment
+   the row no longer fits it wraps, is alone on its line, and its flex-grow takes the whole row: the switch follows the content,
+   not a fixed width. Nothing sits between the two, so nothing can wrap onto a line of its own and add a second row gap. */
+.stage-top > :first-child { flex: 1000 1 auto; }
 .tags { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .tag { font: 500 12px/1 var(--f-mono); padding: 6px 11px; border: 1.5px solid var(--claude); border-radius: 8px; color: var(--claude); }
 .tag.gpt { border-color: var(--gpt); color: var(--gpt); }
@@ -57,7 +57,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 /* The header row: gauges 50 / 50, ledger in equal thirds. Beside the headline it has its natural size and the gauges stretch to
    the ledger's 1.1.0 height; wrapped under the headline it fills the row. The two blocks share the growth and sit on one row
    while they fit, else each takes a row of its own. */
-.right { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; justify-content: flex-end; align-self: flex-start; order: 2; flex: 1 1 auto; min-width: 0; }
+.right { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; justify-content: flex-end; align-self: flex-start; flex: 1 1 auto; min-width: 0; }
 .meters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: stretch; flex: 1 1 auto; min-width: 0; }
 .meter { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
 .meter svg { flex: 0 1 104px; min-width: 0; width: 104px; height: auto; aspect-ratio: 132 / 76; display: block; }
@@ -98,6 +98,13 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 @media (max-width: 410px) {
   .meter { flex-direction: column; gap: 4px; }
   .meter svg { flex: none; width: 100%; max-width: 124px; }
+}
+/* page 380px and under: at 320px each ledger third is about 83px wide, too little for 22px figures between 10px paddings ("$12,345.67"
+   is 74px). Tighter cells and 18px figures instead; still three across, and a caption that does not fit wraps (at its hyphen). */
+@media (max-width: 380px) {
+  .ledger > div { padding: 8px 6px; }
+  .ledger .v { font-size: 18px; }
+  .ledger .v small { font-size: 10px; }
 }
 .portrait .play { transform-box: fill-box; transform-origin: 50% 100%; animation: play 2.4s ease-in-out infinite; }
 .patina { filter: hue-rotate(118deg) saturate(.55) brightness(1.02); }

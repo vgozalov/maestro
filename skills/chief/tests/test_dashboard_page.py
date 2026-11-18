@@ -267,16 +267,12 @@ class HeaderTest(unittest.TestCase):
 
     def test_the_row_fills_the_width_the_moment_it_wraps_under_the_headline(self):
         css = page_css()
-        # No fixed width decides it. A zero-size spacer between the headline and the row soaks up the free space while they share
-        # a line, so the row keeps its natural size; once the row wraps it is alone on its line and its flex-grow fills it.
+        # No fixed width decides it. The headline block soaks up the free space while it shares a line with the row, so the row
+        # keeps its natural size; once the row wraps it is alone on its line and its flex-grow fills it.
         self.assertNotIn("1280px", css)
         self.assertNotIn("1 1 400px", css)
-        spacer = self.rule(css, ".stage-top::after")
-        self.assertRegex(spacer, r'content:\s*""')
-        self.assertRegex(spacer, r"order:\s*1")
-        self.assertRegex(spacer, r"flex:\s*1000 1 0")
+        self.assertRegex(self.rule(css, ".stage-top > :first-child"), r"flex:\s*1000 1 auto")
         right = self.rule(css, ".right")
-        self.assertRegex(right, r"order:\s*2")
         self.assertRegex(right, r"flex:\s*1 1 auto")
         self.assertNotIn("100%", right)                    # never forced to a full row by a width
         self.assertRegex(right, r"min-width:\s*0")
@@ -311,6 +307,35 @@ class HeaderTest(unittest.TestCase):
         self.assertRegex(self.rule(css, ".ledger .v"), r"font-size:\s*22px")
         self.assertRegex(self.rule(css, ".ledger .label, .ledger .mix"), r"font-size:\s*10px")   # captions
         self.assertRegex(self.rule(css, ".rd b"), r"font-size:\s*18px")
+
+    def test_the_ledger_shrinks_to_fit_the_narrowest_phones(self):
+        # At 320px each third is about 83px wide. With the 520px sizes (10px padding, 22px figures) "$12,345.67" is 74px wide
+        # against 63px of room, so the text ran into the next cell. From 380px down the cells give up padding and the figures
+        # a little size instead; three across stays, and a caption that cannot fit wraps (it breaks at the hyphen).
+        css = page_css()
+        phone = self.media("max-width: 380px")
+        self.assertRegex(self.rule(phone, ".ledger > div"), r"padding:\s*8px 6px")
+        self.assertRegex(self.rule(phone, ".ledger .v"), r"font-size:\s*18px")
+        self.assertRegex(self.rule(phone, ".ledger .v small"), r"font-size:\s*10px")
+        self.assertNotRegex(phone, r"grid-template-columns")                # no 2 + 1 split: the thirds stay equal
+        self.assertNotRegex(phone, r"white-space:\s*nowrap")                 # the caption may wrap
+        self.assertGreater(css.index("@media (max-width: 380px)"), css.index("@media (max-width: 520px)"))   # it must win the cascade
+        sizes = [float(n) for n in re.findall(r"\.ledger \.v\s*\{[^}]*?font(?:-size)?:\s*(?:\d+ )?([\d.]+)px", css)]
+        self.assertEqual(len(sizes), 3)                                      # desktop, 520px, 380px
+        self.assertGreaterEqual(min(sizes), 15)                              # the figures stay legible at every width
+
+    def test_the_header_row_is_one_gap_under_the_headline_at_every_width(self):
+        # A zero-size spacer between the headline and the row wrapped onto a line of its own once the headline filled the line
+        # (at 375px and under), which added a second 16px row gap. The headline block takes the free space beside the row
+        # instead, so there is nothing left to wrap alone: the gap is the one 16px row gap at every width.
+        css = page_css()
+        self.assertNotRegex(css, r"\.stage-top::(?:after|before)")
+        lead = self.rule(css, ".stage-top > :first-child")
+        self.assertRegex(lead, r"flex:\s*1000 1 auto")
+        right = self.rule(css, ".right")
+        self.assertRegex(right, r"flex:\s*1 1 auto")                         # 1 : 1000, so beside the headline the row keeps its natural size
+        self.assertNotRegex(right, r"order:")
+        self.assertRegex(self.rule(css, ".stage-top"), r"gap:\s*16px")
 
     def test_the_ledger_never_falls_back_to_two_columns(self):
         css = page_css()
