@@ -50,18 +50,51 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .headline { margin: 12px 0 4px; font: 400 clamp(26px, 3.4vw, 40px)/1.02 var(--f-display); letter-spacing: -.01em; text-wrap: balance; }
 .headline em { color: var(--lamp); font-style: italic; }
 .sub { color: var(--muted); font-size: 15px; max-width: 64ch; margin: 0; }
-.right { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; justify-content: flex-end; }
-.meters { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
-.meter { display: grid; justify-items: center; gap: 2px; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
-.meter svg { width: 132px; height: 76px; display: block; }
-.meter .who { font: 500 12px var(--f-mono); }
-.meter .wk { font: 11px var(--f-mono); color: var(--muted); }
+/* The header row. Beside the headline (page wider than 1280px) the gauges stretch to the ledger's 1.1.0 height; under it
+   the row fills the width: gauges 50 / 50, ledger in equal thirds. */
+.right { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; justify-content: flex-end; align-self: flex-start; }
+.meters { display: flex; gap: 10px; align-items: stretch; flex-wrap: nowrap; }
+.meter { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
+.meter svg { flex: 0 1 104px; min-width: 0; width: 104px; height: auto; aspect-ratio: 132 / 76; display: block; }
+.txt { display: grid; gap: 2px; justify-items: start; flex: none; }
+.meter .who { font: 500 12px/1.2 var(--f-mono); }
+/* two readings of equal weight, each led by a swatch that matches its needle: solid = 5 h, faint = week */
+.rd { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rd b { font: 400 20px/1.05 var(--f-display); }
+.rd small { font: 11px var(--f-mono); color: var(--muted); }
+.rd .sw { align-self: center; width: 11px; height: 2px; border-radius: 1px; background: var(--c); }
+.rd.wkr .sw { height: 2.4px; opacity: .5; }
+.rd.na { white-space: normal; max-width: 96px; }   /* the hint for an unreadable account wraps instead of widening the gauge */
 .ledger { display: grid; grid-template-columns: repeat(3, auto); gap: 0; border: 1.5px solid var(--line); border-radius: 12px; background: rgba(20,13,8,.6); }
-.ledger > div { padding: 8px 14px; display: grid; gap: 4px; align-content: center; border-left: 1.5px solid var(--line); min-width: 120px; }
+.ledger > div { padding: 8px 14px; display: grid; gap: 4px; border-left: 1.5px solid var(--line); min-width: 120px; }
 .ledger > div:first-child { border-left: 0; }
 .ledger .v { font: 400 26px/1 var(--f-display); font-variant-numeric: tabular-nums; }
 .ledger .v small { font: 500 12px var(--f-mono); color: var(--muted); margin-left: 3px; }
 .ledger svg { width: 100%; height: 18px; display: block; }
+/* page 1280px and under: the row drops under the headline and fills it. 400px bases sit side by side while the row is 810px
+   or wider (page 881px+), else each takes a full row. */
+@media (max-width: 1280px) {
+  .right { flex: 1 1 100%; }
+  .meters { flex: 1 1 400px; min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ledger { flex: 1 1 400px; min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ledger > div { min-width: 0; }
+}
+/* page 880px and under: the gauges are alone on a row, so the dial may grow */
+@media (max-width: 880px) {
+  .meter { gap: 14px; }
+  .meter svg { flex-basis: 124px; width: 124px; }
+}
+/* page 520px and under */
+@media (max-width: 520px) {
+  .meter { gap: 6px; padding: 8px; }
+  .meter svg { flex-basis: 104px; width: 104px; }
+  .meter .who { font-size: 11.5px; }
+  .rd b { font-size: 18px; }
+  .ledger > div { padding: 8px 10px; }
+  .ledger .v { font-size: 22px; }
+  .ledger .v small { font-size: 11px; }
+  .ledger .label, .ledger .mix { font-size: 10px; }
+}
 .portrait .play { transform-box: fill-box; transform-origin: 50% 100%; animation: play 2.4s ease-in-out infinite; }
 .patina { filter: hue-rotate(118deg) saturate(.55) brightness(1.02); }
 @keyframes play { 0%, 100% { transform: rotate(-2.2deg) translateY(0); } 25% { transform: rotate(0deg) translateY(-1.5px); } 50% { transform: rotate(2.2deg) translateY(0); } 75% { transform: rotate(0deg) translateY(-1.5px); } }
@@ -238,7 +271,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .chip.danger { border-color: rgba(224,83,61,.5); color: #F2A091; }
 .bar .spacer { flex: 1; }
 .notice { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; min-width: 0; padding: 9px 14px; margin-bottom: 8px; border: 1.5px solid rgba(224,83,61,.45); border-radius: 12px; background: rgba(224,83,61,.07); font-size: 13px; }
-.notice b { font: 500 11px var(--f-mono); color: var(--bad); letter-spacing: .08em; white-space: nowrap; }
+.notice b { font: 500 11px var(--f-mono); color: var(--bad); letter-spacing: .08em; overflow-wrap: anywhere; }
 .notice ul { margin: 0; padding-left: 16px; min-width: 0; }
 .notice li { overflow-wrap: anywhere; }
 .status-line { color: var(--muted); font: 12px var(--f-mono); margin: 0 0 10px; }
@@ -364,12 +397,8 @@ tr.agent.sel td:first-child { box-shadow: inset 2px 0 0 var(--lamp); }
   .s-body { grid-template-columns: 1fr; overflow: auto; }
   .s-main, .s-side { overflow: visible; }
   .s-side { border-left: 0; border-top: 1.5px solid var(--line); }
-  .right { justify-content: flex-start; }
 }
 @media (max-width: 620px) {
-  .meter svg { width: 112px; height: 66px; }
-  .ledger { grid-template-columns: 1fr 1fr; }
-  .ledger > div:nth-child(3) { border-left: 0; border-top: 1.5px solid var(--line); grid-column: 1 / -1; }
   .s-head h2 { font-size: 28px; }
 }
 </style>
@@ -511,17 +540,21 @@ function meter(name, reading, color) {
   const pt = (p, r) => [cx + r * Math.cos(ang(p)), cy - r * Math.sin(ang(p))]
   let ticks = ''
   for (let p = 0; p <= 100; p += 10) { const [x1, y1] = pt(p, R), [x2, y2] = pt(p, R - (p % 50 ? 5 : 9)); ticks += `<path d="M ${x1} ${y1} L ${x2} ${y2}" stroke="${p >= 90 ? '#E0533D' : '#B3A285'}" stroke-width="${p % 50 ? 1 : 1.6}"/>` }
-  const [a1, b1] = pt(60, R + 2), [a2, b2] = pt(60, R - 12)
+  const [a1, b1] = pt(60, R + 3), [a2, b2] = pt(60, R - 14)
   let needles = ''
   if (week != null) { const [w1, v1] = pt(week, R - 22); needles += `<path d="M ${cx} ${cy} L ${w1} ${v1}" stroke="${color}" stroke-opacity=".5" stroke-width="2.4" stroke-linecap="round"/>` }
   if (five != null) { const [n1, m1] = pt(five, R - 6); needles += `<path d="M ${cx} ${cy} L ${n1} ${m1}" stroke="${color}" stroke-width="2" stroke-linecap="round" style="filter:drop-shadow(0 0 3px ${color})"/>` }
-  const label = five == null ? 'no reading' : `${name}: ${five}% of the 5-hour window, ${week}% of the week${reading.blocked ? ', blocked' : ''}`
+  const blocked = reading && reading.blocked
+  const label = five == null ? 'no reading' : `${name}: ${five}% of the 5-hour window${week == null ? '' : `, ${week}% of the week`}${blocked ? ', blocked' : ''}; line at 60%`
+  // Each reading is keyed to its needle by the swatch (solid = 5 h, faint = week); a reading that is missing has no needle, so its swatch is clear.
+  const rd = (cls, v, unit) => `<span class="${cls}" style="--c:${v == null ? 'transparent' : color}"><i class="sw"></i><b>${v == null ? '—' : v + '%'}</b><small>${unit}</small></span>`
+  const hint = `<span class="rd wkr na" style="--c:transparent"><i class="sw"></i><small>run the usage check</small></span>`
   return `<div class="meter"><svg viewBox="0 0 132 76" role="img" aria-label="${esc(label)}">
     <path d="M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}" fill="rgba(255,196,94,.05)" stroke="#6B4A1C" stroke-width="1.5"/>
-    ${ticks}<path d="M ${a1} ${b1} L ${a2} ${b2}" stroke="#FFC45E" stroke-width="2"/>${needles}
+    ${ticks}<path d="M ${a1} ${b1} L ${a2} ${b2}" stroke="#FFC45E" stroke-width="2.6"/>${needles}
     <circle cx="${cx}" cy="${cy}" r="5" fill="#B88A34" stroke="#150C05" stroke-width="1.2"/>
-    <text x="${cx}" y="${cy - 18}" text-anchor="middle" fill="#EFE4CF" font-family="Instrument Serif, Georgia, serif" font-size="20">${five == null ? '—' : five + '%'}</text>
-  </svg><span class="who" style="color:${color}">${name} · 5 h${reading && reading.blocked ? ' · blocked' : ''}</span><span class="wk">${week == null ? 'run the usage check' : `week ${week}% · line at 60%`}</span></div>`
+    <text x="89" y="14" fill="#FFC45E" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="13" font-weight="500">60%</text>
+  </svg><div class="txt"><span class="who" style="color:${color}">${name}${blocked ? ' · blocked' : ''}</span>${rd('rd', five, '5 h')}${week == null ? hint : rd('rd wkr', week, 'week')}</div></div>`
 }
 function sparkline(values) {
   const max = Math.max(...values, 0.0001), n = values.length

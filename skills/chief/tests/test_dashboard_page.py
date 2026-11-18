@@ -4,6 +4,7 @@ The page is one self-contained file, so these tests read its <style> text and ru
 tiny fake DOM (PRELUDE). Later page tasks reuse page_css, run_page, sample_run and sample_board.
 """
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -132,6 +133,9 @@ class LayoutTest(unittest.TestCase):
         self.assertRegex(notice, r"min-width:\s*0")
         self.assertRegex(css, r"\.notice ul\s*\{[^}]*min-width:\s*0")
         self.assertRegex(css, r"\.notice li\s*\{[^}]*overflow-wrap:\s*anywhere")
+        label = re.search(r"\.notice b\s*\{([^}]*)\}", css).group(1)
+        self.assertNotIn("nowrap", label)                       # a long repo or branch name wrapped nowhere and scrolled the page sideways
+        self.assertRegex(label, r"overflow-wrap:\s*anywhere")
 
     def test_empty_columns_keep_their_vertical_title(self):
         css = page_css()
@@ -183,15 +187,143 @@ class HeaderTest(unittest.TestCase):
         self.assertLess(html.index('id="meters"'), html.index('id="ledger"'))
         self.assertRegex(page_css(), r"\.right\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap")
 
-    def test_gauges_are_squareish_like_1_1_0(self):
+    METER = ("Claude", {"5h": 11, "week": 29}, "#D4703C")
+
+    @staticmethod
+    def rule(css, sel):
+        m = re.search(r"(?<![\w-])" + re.escape(sel) + r"\s*\{([^}]*)\}", css)
+        assert m, f"no rule for {sel}"
+        return m.group(1)
+
+    @staticmethod
+    def media(query):
+        """The body of the page's `@media (<query>) { ... }` block, brace-matched."""
         css = page_css()
-        self.assertRegex(css, r"\.meter\s*\{[^}]*display:\s*grid;[^}]*justify-items:\s*center")
-        self.assertNotRegex(css, r"\.meter\s*\{[^}]*grid-template-columns")
-        self.assertNotRegex(css, r"\.meter svg\s*\{[^}]*grid-row")
-        self.assertRegex(css, r"\.meter svg\s*\{[^}]*width:\s*132px[^}]*height:\s*76px")
-        narrow = css[css.index("@media (max-width: 620px)"):]
-        self.assertRegex(narrow, r"\.meter svg\s*\{[^}]*width:\s*112px[^}]*height:\s*66px")
+        start = css.index("@media (" + query + ")")
+        open_at = css.index("{", start)
+        depth = 0
+        for i in range(open_at, len(css)):
+            depth += {"{": 1, "}": -1}.get(css[i], 0)
+            if depth == 0:
+                return css[open_at + 1:i]
+        raise AssertionError("unbalanced @media " + query)
+
+    def test_a_gauge_is_a_dial_beside_its_readings_as_tall_as_the_ledger(self):
+        css = page_css()
+        meter = self.rule(css, ".meter")
+        for want in (r"display:\s*flex", r"align-items:\s*center", r"justify-content:\s*center", r"gap:\s*8px", r"padding:\s*8px 10px"):
+            self.assertRegex(meter, want)
+        self.assertNotIn("grid-template-columns", meter)
+        meters = self.rule(css, ".meters")
+        self.assertRegex(meters, r"flex-wrap:\s*nowrap")
+        self.assertRegex(meters, r"align-items:\s*stretch")   # the gauges take the ledger's height
+        self.assertRegex(self.rule(css, ".right"), r"align-self:\s*flex-start")  # else the row stretches to the headline block
+        dial = self.rule(css, ".meter svg")
+        for want in (r"flex:\s*0 1 104px", r"min-width:\s*0", r"width:\s*104px", r"height:\s*auto", r"aspect-ratio:\s*132\s*/\s*76"):
+            self.assertRegex(dial, want)
+        self.assertNotRegex(dial, r"height:\s*76px")
         self.assertRegex(css, r"\.headline\s*\{[^}]*clamp\(26px,\s*3\.4vw,\s*40px\)")
+        svg = run_page("return meter(...%s)" % json.dumps(self.METER))
+        self.assertIn('viewBox="0 0 132 76"', svg)    # the drawing is unchanged; only its box is
+
+    def test_each_reading_has_a_swatch_keyed_to_its_needle(self):
+        css = page_css()
+        self.assertRegex(self.rule(css, ".rd"), r"display:\s*flex[^}]*align-items:\s*baseline[^}]*gap:\s*5px")
+        self.assertRegex(self.rule(css, ".rd b"), r"font:\s*400 20px/1\.05 var\(--f-display\)")
+        sw = self.rule(css, ".rd .sw")
+        for want in (r"width:\s*11px", r"height:\s*2px", r"background:\s*var\(--c\)"):
+            self.assertRegex(sw, want)
+        wk = self.rule(css, ".rd.wkr .sw")                # the week needle is drawn faint and a little thicker
+        self.assertRegex(wk, r"height:\s*2\.4px")
+        self.assertRegex(wk, r"opacity:\s*\.5")
+
+    def test_the_ledger_keeps_its_1_1_0_size_and_padding(self):
+        css = page_css()
+        cell = self.rule(css, ".ledger > div")
+        self.assertRegex(cell, r"padding:\s*8px 14px")
+        self.assertRegex(cell, r"min-width:\s*120px")
+        self.assertNotIn("align-content", cell)           # the cells are no longer padded out to the gauges' height
+        self.assertRegex(self.rule(css, ".ledger"), r"grid-template-columns:\s*repeat\(3, auto\)")
+        self.assertRegex(self.rule(css, ".ledger .v"), r"font:\s*400 26px/1")
+
+    def test_the_60_percent_line_is_back_with_its_flag(self):
+        svg = run_page("return meter(...%s)" % json.dumps(self.METER))
+        line = re.search(r'<path d="M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)" stroke="#FFC45E" stroke-width="2\.6"/>', svg)
+        self.assertTrue(line, "no 60% line of width 2.6")
+        x1, y1, x2, y2 = (float(n) for n in line.groups())
+        self.assertAlmostEqual(math.hypot(x1 - 66, y1 - 66), 57, places=2)   # R + 3
+        self.assertAlmostEqual(math.hypot(x2 - 66, y2 - 66), 40, places=2)   # R - 14
+        self.assertAlmostEqual(math.degrees(math.atan2(66 - y1, x1 - 66)), 72, places=2)   # 60% of the half circle
+        flag = re.search(r"<text ([^>]*)>60%</text>", svg)
+        self.assertTrue(flag, "no 60% flag")
+        for want in ('x="89"', 'y="14"', 'font-size="13"', 'font-weight="500"', 'fill="#FFC45E"', "IBM Plex Mono"):
+            self.assertIn(want, flag.group(1))
+        self.assertEqual(svg.count("<text"), 1)           # the dial shows no number of its own
+
+    def test_up_to_1280px_the_row_drops_under_the_headline_and_fills_it(self):
+        css = self.media("max-width: 1280px")
+        self.assertRegex(self.rule(css, ".right"), r"flex:\s*1 1 100%")
+        for sel in (".meters", ".ledger"):
+            body = self.rule(css, sel)
+            self.assertRegex(body, r"flex:\s*1 1 400px")
+            self.assertRegex(body, r"min-width:\s*0")
+        self.assertRegex(self.rule(css, ".meters"), r"display:\s*grid[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)")
+        self.assertRegex(self.rule(css, ".ledger"), r"grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)")
+        self.assertRegex(self.rule(css, ".ledger > div"), r"min-width:\s*0")
+
+    def test_gauges_alone_on_a_row_grow_their_dial(self):
+        css = self.media("max-width: 880px")
+        self.assertRegex(self.rule(css, ".meter"), r"gap:\s*14px")
+        self.assertRegex(self.rule(css, ".meter svg"), r"flex-basis:\s*124px[^}]*width:\s*124px")
+
+    def test_phone_sizes_from_520px(self):
+        css = self.media("max-width: 520px")
+        meter = self.rule(css, ".meter")
+        self.assertRegex(meter, r"gap:\s*6px")
+        self.assertRegex(meter, r"padding:\s*8px")
+        self.assertRegex(self.rule(css, ".ledger > div"), r"padding:\s*8px 10px")
+        self.assertRegex(self.rule(css, ".ledger .v"), r"font-size:\s*22px")
+        self.assertRegex(self.rule(css, ".ledger .label, .ledger .mix"), r"font-size:\s*10px")   # captions
+        self.assertRegex(self.rule(css, ".rd b"), r"font-size:\s*18px")
+
+    def test_the_ledger_never_falls_back_to_two_columns(self):
+        css = page_css()
+        self.assertNotIn(".ledger > div:nth-child(3)", css)   # the old 620px 2 + 1 split
+        self.assertNotRegex(css, r"\.meter svg\s*\{[^}]*(112px|66px)")
+        self.assertNotRegex(self.media("max-width: 1100px"), r"\.right")
+
+    def test_the_gauge_script_fills_both_readings(self):
+        html = run_page("return meter('ChatGPT', { '5h': 0, week: 90 }, '#74B9A7')")
+        self.assertIn('<b>0%</b><small>5 h</small>', html)     # 0 is a reading, not a missing one
+        self.assertIn('<b>90%</b><small>week</small>', html)
+        self.assertEqual(html.count('style="--c:#74B9A7"'), 2)  # both swatches carry the account colour
+        self.assertRegex(html, r'<span class="rd wkr"')
+        self.assertIn('aria-label="ChatGPT: 0% of the 5-hour window, 90% of the week; line at 60%"', html)
+        self.assertEqual(html.count('stroke-linecap="round"'), 2)   # both needles are drawn
+        self.assertIn('stroke-opacity=".5"', html)
+
+    def test_both_gauges_are_filled_from_the_board(self):
+        board = sample_board([sample_run()])
+        board["accounts"] = {"claude": {"5h": 11, "week": 29}, "chatgpt": {"5h": 0, "week": 90}}
+        html = run_page(f"active = {json.dumps(board)}; renderStage(); return $('meters').innerHTML")
+        self.assertEqual(html.count('class="meter"'), 2)
+        for want in ("<b>11%</b>", "<b>29%</b>", "<b>0%</b>", "<b>90%</b>", "Claude", "ChatGPT"):
+            self.assertIn(want, html)
+
+    def test_an_unreadable_account_draws_dashes_no_needles_and_the_hint(self):
+        for reading in ("undefined", "{ '5h': null, week: null }", "{}"):
+            html = run_page(f"return meter('Claude', {reading}, '#D4703C')")
+            self.assertIn('aria-label="no reading"', html)
+            self.assertIn("<b>—</b><small>5 h</small>", html)
+            self.assertIn("run the usage check", html)
+            self.assertNotIn('stroke-linecap="round"', html)    # no needle without a reading
+            for junk in ("NaN", "null", "undefined"):
+                self.assertNotIn(junk, html)
+            self.assertIn("60%", html)                           # the line and its flag stay
+        half = run_page("return meter('Claude', { '5h': 40, week: null }, '#D4703C')")
+        self.assertIn("<b>40%</b>", half)
+        self.assertIn("run the usage check", half)
+        self.assertEqual(half.count('stroke-linecap="round"'), 1)
 
     def test_no_line_between_the_header_and_the_stages(self):
         hall = re.search(r"\.hall\s*\{([^}]*)\}", page_css()).group(1)
