@@ -303,26 +303,27 @@ class HeaderTest(unittest.TestCase):
         meter = self.rule(css, ".meter")
         self.assertRegex(meter, r"gap:\s*6px")
         self.assertRegex(meter, r"padding:\s*8px")
-        self.assertRegex(self.rule(css, ".ledger > div"), r"padding:\s*8px 10px")
-        self.assertRegex(self.rule(css, ".ledger .v"), r"font-size:\s*22px")
-        self.assertRegex(self.rule(css, ".ledger .label, .ledger .mix"), r"font-size:\s*10px")   # captions
+        self.assertRegex(self.rule(css, ".ledger .label, .ledger .mix"), r"font-size:\s*10px")   # captions; the ledger's own sizes scale (test above)
         self.assertRegex(self.rule(css, ".rd b"), r"font-size:\s*18px")
 
-    def test_the_ledger_shrinks_to_fit_the_narrowest_phones(self):
-        # At 320px each third is about 83px wide. With the 520px sizes (10px padding, 22px figures) "$12,345.67" is 74px wide
-        # against 63px of room, so the text ran into the next cell. From 380px down the cells give up padding and the figures
-        # a little size instead; three across stays, and a caption that cannot fit wraps (it breaks at the hyphen).
+    def test_the_ledger_scales_with_the_page_width_below_520px(self):
+        # At 320px each third is about 83px wide, and the faces differ a lot: "$12,345.67" is 3.4em wide in the bundled Instrument
+        # Serif but 5.0em in the Iowan Old Style a Mac falls back to when the file does not load. So below 520px the figures and the
+        # cell padding follow the page width (no fixed step to guess a face for): 15px figures and 4px padding at 320px, reaching the
+        # 22px and 10px of the 520px block by 470px and 480px. Three across stays; a caption that cannot fit wraps at its hyphen.
         css = page_css()
-        phone = self.media("max-width: 380px")
-        self.assertRegex(self.rule(phone, ".ledger > div"), r"padding:\s*8px 6px")
-        self.assertRegex(self.rule(phone, ".ledger .v"), r"font-size:\s*18px")
-        self.assertRegex(self.rule(phone, ".ledger .v small"), r"font-size:\s*10px")
-        self.assertNotRegex(phone, r"grid-template-columns")                # no 2 + 1 split: the thirds stay equal
-        self.assertNotRegex(phone, r"white-space:\s*nowrap")                 # the caption may wrap
-        self.assertGreater(css.index("@media (max-width: 380px)"), css.index("@media (max-width: 520px)"))   # it must win the cascade
-        sizes = [float(n) for n in re.findall(r"\.ledger \.v\s*\{[^}]*?font(?:-size)?:\s*(?:\d+ )?([\d.]+)px", css)]
-        self.assertEqual(len(sizes), 3)                                      # desktop, 520px, 380px
-        self.assertGreaterEqual(min(sizes), 15)                              # the figures stay legible at every width
+        phone = self.media("max-width: 520px")
+        self.assertRegex(self.rule(phone, ".ledger .v"), r"font-size:\s*clamp\(15px,\s*4\.7vw,\s*22px\)")
+        self.assertRegex(self.rule(phone, ".ledger > div"), r"padding:\s*8px clamp\(4px,\s*calc\(3\.75vw - 8px\),\s*10px\)")
+        self.assertRegex(self.rule(phone, ".ledger .v small"), r"font-size:\s*clamp\(10px,\s*3vw,\s*11px\)")   # the "/ h" unit
+        self.assertRegex(self.rule(phone, ".ledger .label, .ledger .mix"), r"font-size:\s*10px")   # captions are at their floor already
+        self.assertRegex(self.rule(css, ".ledger > div"), r"min-width:\s*0")
+        self.assertNotIn("@media (max-width: 380px)", css)                    # one fluid rule, not another step
+        self.assertNotRegex(phone, r"grid-template-columns")                  # no 2 + 1 split: the thirds stay equal
+        self.assertNotRegex(phone, r"white-space:\s*nowrap")                  # the caption may wrap
+        sizes = [float(n) for n in re.findall(r"\.ledger \.v\s*\{[^}]*?font(?:-size)?:\s*(?:clamp\()?(?:\d+ )?([\d.]+)px", css)]
+        self.assertEqual(len(sizes), 2)                                       # desktop 26px, and the 520px block's floor
+        self.assertGreaterEqual(min(sizes), 15)                               # the figures stay legible at every width
 
     def test_the_header_row_is_one_gap_under_the_headline_at_every_width(self):
         # A zero-size spacer between the headline and the row wrapped onto a line of its own once the headline filled the line

@@ -88,9 +88,13 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   .meter svg { flex-basis: 104px; width: 104px; }
   .meter .who { font-size: 11.5px; }
   .rd b { font-size: 18px; }
-  .ledger > div { padding: 8px 10px; }
-  .ledger .v { font-size: 22px; }
-  .ledger .v small { font-size: 11px; }
+  /* The ledger's figures and cell padding follow the page width instead of stepping: three thirds are only 83px wide at 320px, and
+     "$12,345.67" is 3.4em in the bundled Instrument Serif but 5.0em in the Iowan Old Style a Mac falls back to, so no fixed size suits
+     both. 15px figures and 4px side padding at 320px (the widest face still ends 3px inside its cell), the 22px and 10px of
+     this block from 470px and 480px up. Captions are at their 10px floor and wrap (at the hyphen) instead of overflowing. */
+  .ledger > div { padding: 8px clamp(4px, calc(3.75vw - 8px), 10px); }
+  .ledger .v { font-size: clamp(15px, 4.7vw, 22px); }
+  .ledger .v small { font-size: clamp(10px, 3vw, 11px); }
   .ledger .label, .ledger .mix { font-size: 10px; }
 }
 /* page 410px and under: side by side the dial would fall under ~56px, so each half-width card stacks the dial above its
@@ -98,13 +102,6 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 @media (max-width: 410px) {
   .meter { flex-direction: column; gap: 4px; }
   .meter svg { flex: none; width: 100%; max-width: 124px; }
-}
-/* page 380px and under: at 320px each ledger third is about 83px wide, too little for 22px figures between 10px paddings ("$12,345.67"
-   is 74px). Tighter cells and 18px figures instead; still three across, and a caption that does not fit wraps (at its hyphen). */
-@media (max-width: 380px) {
-  .ledger > div { padding: 8px 6px; }
-  .ledger .v { font-size: 18px; }
-  .ledger .v small { font-size: 10px; }
 }
 .portrait .play { transform-box: fill-box; transform-origin: 50% 100%; animation: play 2.4s ease-in-out infinite; }
 .patina { filter: hue-rotate(118deg) saturate(.55) brightness(1.02); }
