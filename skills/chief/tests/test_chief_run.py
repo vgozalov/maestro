@@ -1032,20 +1032,41 @@ class ResumedRunTest(Workspace):
 
     # an archived run that resumes comes back
 
-    def test_every_working_phase_brings_an_archived_run_back_to_the_board(self):
-        for phase in sorted(set(chief.PHASES) - {"done", "paused"}):
-            run = self.start(title=f"Resumed into {phase}")
+    def assert_back_on_the_board(self, run):
+        self.assertIn(run.name, [r["id"] for r in self.board()["runs"]])
+        self.assertFalse(self.card(run)["archived"])
+        self.assertNotIn("archived", self.pointer(run))
+        self.assertNotIn("totals", self.pointer(run))
+
+    def test_a_run_archived_while_working_stays_archived_across_phase_changes(self):
+        run = self.start(title="Archived at work", session_id=self.FIRST)
+        chief.set_phase(str(run), "implement", session_id=self.FIRST)
+        self.archive(run)
+        for phase in ("review", "plan", "implement", "report"):
+            chief.set_phase(str(run), phase, session_id=self.FIRST)  # the same session going on: not a resume
+            self.assertTrue(self.pointer(run)["archived"], phase)
+            self.assertIn("totals", self.pointer(run), phase)
+            self.assertNotIn(run.name, [r["id"] for r in self.board()["runs"]], phase)
+
+    def test_a_run_archived_while_paused_comes_back_when_it_goes_to_work(self):
+        for phase in ("done", "paused"):
+            run = self.start(title=f"Archived while {phase}", session_id=self.FIRST)
+            chief.set_phase(str(run), phase, session_id=self.FIRST)
             self.archive(run)
-            self.assertNotIn(run.name, [r["id"] for r in self.board()["runs"]])
-            chief.set_phase(str(run), phase)
-            self.assertIn(run.name, [r["id"] for r in self.board()["runs"]], phase)
-            self.assertFalse(self.card(run)["archived"], phase)
-            self.assertNotIn("archived", self.pointer(run), phase)
-            self.assertNotIn("totals", self.pointer(run), phase)
+            chief.set_phase(str(run), "implement", session_id=self.FIRST)
+            self.assert_back_on_the_board(run)
+
+    def test_a_run_archived_at_work_comes_back_in_a_new_session(self):
+        run = self.start(title="Resumed", session_id=self.FIRST)
+        chief.set_phase(str(run), "implement", session_id=self.FIRST)
+        self.archive(run)
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        self.assert_back_on_the_board(run)
 
     def test_the_stale_archived_totals_are_dropped_and_the_spend_is_counted_once(self):
         run = self.start(title="Busy")
         self.codex_record(run, "first")
+        chief.set_phase(str(run), "paused")
         self.archive(run)
         self.assertAlmostEqual(self.pointer(run)["totals"]["total_cost_usd"], 0.078, places=3)
         self.codex_record(run, "second")
@@ -1067,6 +1088,7 @@ class ResumedRunTest(Workspace):
 
     def test_pausing_a_resumed_run_leaves_it_on_the_board(self):
         run = self.start(title="X")
+        chief.set_phase(str(run), "paused")
         self.archive(run)
         chief.set_phase(str(run), "implement")
         chief.set_phase(str(run), "paused", config_dir=str(self.config), prices=PRICES)
@@ -1195,6 +1217,23 @@ class ResumedRunTest(Workspace):
         self.assertEqual((self.card(run)["session_id"], self.card(run)["chat_title"]), (self.SECOND, "Resumed chat"))
         self.assertGreater(chief.parse_time(rows[1]["started"]), chief.parse_time(rows[0]["started"]))  # no message of its own: it starts when its file was last written, after the first
 
+    def test_a_copied_session_with_no_message_of_its_own_keeps_the_cache(self):
+        run = self.old_run(session_id=self.FIRST)
+        first = self.session(run, self.FIRST, "start", 600, usage=self.SECOND_USAGE)
+        self.replayed(run, first, self.SECOND)
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        warm = {"last_at": int(self.BEGAN) + 600, "ttl_s": 3600}  # the copy is the newest prompt-cache activity there is
+        row = next(a for a in self.chiefs(run) if a["id"] == "chief")
+        self.assertEqual((row["session_id"], row["tokens"]["input"], row["cost_usd"]), (self.SECOND, 0, 0.0))  # the cost is still not counted twice
+        self.assertEqual((row["cache"], self.card(run)["cache"]), (warm, warm))
+
+    def test_a_resumed_chats_cache_read_takes_the_ttl_of_a_copied_write(self):
+        run = self.old_run(session_id=self.FIRST)
+        first = self.session(run, self.FIRST, "start", 600, usage=self.SECOND_USAGE)  # a one-hour write
+        self.replayed(run, first, self.SECOND, offset=90_000, usage=READ_ONLY)  # the resumed chat only reads the cache
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)
+        self.assertEqual(self.card(run)["cache"], {"last_at": int(self.BEGAN) + 90_000, "ttl_s": 3600})  # not the five minutes of a bare read
+
     def test_parse_messages_skips_what_an_earlier_transcript_already_counted(self):
         record = lambda kind, uuid, message_id=None, tokens=10: json.dumps({
             "type": kind, "uuid": uuid, "timestamp": "2026-01-01T00:00:10Z",
@@ -1243,6 +1282,19 @@ class ResumedRunTest(Workspace):
         run = self.start(session_id=self.FIRST)
         chief.set_phase(str(run), "implement", session_id=self.SECOND)
         self.assertEqual(self.card(run)["session_id"], self.SECOND)
+
+    def test_an_earlier_session_is_never_the_chief_when_the_newest_has_no_transcript(self):
+        run = self.old_run(session_id=self.FIRST)
+        self.session(run, self.FIRST, "start", 600, title="First chat")
+        chief.set_phase(str(run), "implement", session_id=self.SECOND)  # the newest session's file is not written yet
+        card = self.card(run)
+        self.assertEqual([(a["id"], a["session_id"]) for a in card["agents"] if a["role"] == "chief"], [(f"chief-{self.FIRST}", self.FIRST)])
+        self.assertEqual((card["session_id"], card["chat_title"], card["cache"]), (self.SECOND, None, None))  # the card still names the newest
+        self.assertEqual(card["totals"]["claude"]["cost_usd"], 4.0)  # the earlier session's spend still counts
+        self.assertEqual(self.open_chat(run), ((404, {"error": "no chief chat is recorded for this run"}), []))
+        self.session(run, self.SECOND, "phase", 90_000)  # once it is written, it is the chief
+        self.assertEqual([(a["id"], a["session_id"]) for a in self.chiefs(run)], [(f"chief-{self.FIRST}", self.FIRST), ("chief", self.SECOND)])
+        self.assertEqual(self.open_chat(run), ((200, {"opened": "Terminal"}), [(str(self.repo), self.SECOND)]))
 
     # older run.json files
 

@@ -248,9 +248,10 @@ def set_phase(run_dir, phase, plan=None, workspace=None, config_dir=None, prices
         raise ValueError(f"unknown phase {phase!r}; one of: {', '.join(PHASES)}")
     state = load_run(run_dir)
     at = now_iso()
+    resumed = state.get("phase") in ("done", "paused")  # a run that goes back to work, as opposed to one that goes on working
     state["phase"] = phase
     # the session running this phase drives the run now: a run from before the id was recorded, or one resumed in a new session, learns it here
-    note_session(state, plain_session_id(session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")))
+    resumed |= note_session(state, plain_session_id(session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")))
     state["phases"].append({"phase": phase, "at": at, "usage": usage_snapshot()})
     if plan:
         state["plan"] = plan
@@ -262,8 +263,8 @@ def set_phase(run_dir, phase, plan=None, workspace=None, config_dir=None, prices
     if run and (read_json(pointer_path(run["repo"], run["id"])) or {}).get("archived"):
         if phase in ("done", "paused"):
             set_archived(run, True, build_cards([run], config_dir, prices)[0]["totals"])  # the totals taken at archive time are stale
-        else:
-            set_archived(run, False)  # a run that goes back to work returns to the board, without its stale totals
+        elif resumed:  # a run the user archived while it worked stays archived through its ordinary phase changes
+            set_archived(run, False)  # a resumed run returns to the board, without its stale totals
     return state
 
 
@@ -350,10 +351,14 @@ def run_sessions(run):
 
 
 def note_session(state, session_id):
-    """Make `session_id` the run's current chief session, keeping the ones before it. No id changes nothing."""
-    if session_id:
-        state["sessions"] = [sid for sid in run_sessions(state) if sid != session_id] + [session_id]
-        state["session_id"] = session_id
+    """Make `session_id` the run's current chief session, keeping the ones before it. No id changes nothing.
+    Returns whether another session is current now."""
+    if not session_id:
+        return False
+    changed = state.get("session_id") != session_id
+    state["sessions"] = [sid for sid in run_sessions(state) if sid != session_id] + [session_id]
+    state["session_id"] = session_id
+    return changed
 
 
 def prompt_text(entry):
@@ -424,7 +429,7 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None, seen=Non
     """Usage, cost, recent tool calls, spend per 10 minutes and the last reply over a transcript's assistant messages.
 
     `seen` is shared by the transcripts of one run, oldest first: a record an earlier one already counted is skipped
-    as if absent (cost, start, last message, cache), and this transcript's own records are added to it afterwards."""
+    as if absent (cost, start, last message), except for the cache, and this transcript's own records are added to it afterwards."""
     messages, last_text, last_entry, first_at, last_at = {}, "", None, None, None
     acts, stamps, mine = [], {}, set()
     last_cache, written_ttl = None, None  # the newest message's (time, ttl), and the ttl of the latest cache write
@@ -439,8 +444,12 @@ def parse_messages(lines, prices, start=None, end=None, sidechain=None, seen=Non
         if sidechain is not None and bool(entry.get("isSidechain")) != sidechain:
             continue
         key = record_key(entry) if entry.get("type") in ("user", "assistant") else None
-        if key and seen and key in seen:
-            continue  # a copy of a record an earlier transcript counted
+        if key and seen and key in seen:  # a copy of a record an earlier transcript counted
+            message = entry.get("message")
+            if entry.get("type") == "assistant" and isinstance(message, dict) and message.get("usage") and message.get("id"):
+                written_ttl, ttl = cache_ttl(message["usage"], written_ttl)  # the cache is the latest activity, not a cost: a copy still warms it
+                last_cache = (at, ttl)
+            continue
         if key:
             mine.add(key)  # only after the pass: a message streamed twice in one transcript still counts once, by its last copy
         if entry.get("type") in ("user", "assistant"):
@@ -646,8 +655,9 @@ def read_chief_session(run, prices, path, text, sure, seen, first):
 
 def chief_sessions(config_dir, run, prices, since):
     """The chief rows of a run, oldest session first: one per recorded session whose transcript is found. The
-    current session's row is "chief"; an earlier one is "chief-<session id>". A run with no recorded session
-    transcript falls back to the first main session that names it."""
+    newest recorded session's row is "chief"; any other is "chief-<session id>", so with the newest transcript
+    missing there is no "chief" row. When no recorded session has a transcript, the first main session that names
+    the run stands in, and is the "chief" only for a run that records no session at all."""
     found = []
     for session_id in run_sessions(run):
         path = session_transcript(config_dir, session_id)
@@ -670,8 +680,10 @@ def chief_sessions(config_dir, run, prices, since):
                 break
     seen = set()  # the records each session counts; a resumed chat's copy of an earlier one's is not counted again
     rows = [row for row in (read_chief_session(run, prices, *item, seen, index == 0) for index, item in enumerate(found)) if row]
-    for row in rows[:-1]:
-        row.update(id="chief-" + row["session_id"], description="an earlier chief session")
+    newest = (run_sessions(run) or [None])[-1]
+    for row in rows:
+        if newest and row["session_id"] != newest:  # the chief is the newest recorded session, never an older one standing in for it
+            row.update(id="chief-" + row["session_id"], description="an earlier chief session")
     return rows
 
 
